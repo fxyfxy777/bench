@@ -62,7 +62,7 @@ EXTRA_ORDER = [
 # 各框架 ready 标志（可在 YAML global.ready_marker 覆盖）
 READY_MARKERS = {
     "fd":     "Application startup complete",
-    "sglang": "The server is fired up and ready to roll",
+    "sglang": "Application startup complete",
 }
 
 
