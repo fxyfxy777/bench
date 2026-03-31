@@ -384,6 +384,12 @@ def main():
         if server_cmd:
             if args.smoke_test:
                 server_cmd_display = server_cmd
+            # FD 框架：为每个实验单独保存日志，避免被后续实验覆盖
+            if framework == "fd":
+                fd_log_dir = run_dir / f"{idx+1}_{name}_fd_log"
+                fd_log_dir.mkdir(parents=True, exist_ok=True)
+                server_cmd = f"export FD_LOG_DIR={fd_log_dir}\n" + server_cmd
+                print(f"  FD 日志目录 → {fd_log_dir.name}", flush=True)
             print(f"  预清理残留进程...", flush=True)
             kill_server(port, extra_ports=extra_ports, cuda_devices=cuda_devices)
             time.sleep(3)
