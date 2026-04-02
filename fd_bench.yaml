@@ -1,1 +1,604 @@
-/workspace3/fxy/FastDeploy/autorun/bench.yaml
+global:
+  port: 2786
+  CUDA_VISIBLE_DEVICES: 4,5,6,7
+  extra_ports_offsets: [100, 200, 300]  # metrics(+100), engine-worker-queue(+200), cache-queue(+300)
+  health_url: "http://127.0.0.1:2786/health"
+  server_ready_timeout: 1000   # 等待服务启动最长秒数
+  shutdown_wait: 20           # kill server 后等待 GPU 显存释放的秒数
+  results_dir: "./results"    # 结果目录（相对于本文件所在目录）
+
+# ── 数据集路径 ────────────────────────────────────────────────────────────────
+# 中短数据集：输入~2k 输出~1k
+# /workspace3/fxy/sglang/debug/0724_ShareGPT_range_1800_3000_num_5000_FD.jsonl  (n=5000)
+# 多轮数据集：输入~8k 输出~200
+# /workspace3/fxy/sglang/debug/20260302_browsecomp_plus_processed_num_830_fd.jsonl  (n=830)
+# 长输入数据集：输入~36k 输出~50
+# /workspace3/fxy/sglang/debug/260226_loogle_longdep_NarrativeQA_mix_prefix_input_avg_35k_num_6748_with_only_max_tokens_for_fastdeploy.jsonl  (n=6748)
+# 长输出数据集：输入~680 输出~18k
+# /workspace3/fxy/sglang/debug/eb5_ppo_data_v1126_reasoning_merge_data_v1_for_release_gbs384_text_shuffled_250_with_output_tokens.jsonl  (n=250)
+
+experiments:
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # 一、中短数据集  输入:2k  输出:1k
+  # ════════════════════════════════════════════════════════════════════════════
+
+  - name: fd_中短_MTP_c512
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export PYTHONPATH="/workspace3/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export FD_CUSTOM_AR_MAX_SIZE_MB=8
+      model_path=/workspace3/fxy/models/GLM-4.5-Air
+      /root/miniconda3/envs/fxy_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.api_server \
+          --model $model_path \
+          --port 2786 \
+          --metrics-port 2886 \
+          --engine-worker-queue-port 2986 \
+          --cache-queue-port 3086 \
+          --max-model-len 32768 \
+          --max-num-seqs 512 \
+          --tensor-parallel-size 4 \
+          --enable-overlap-schedule \
+          --enable-flashinfer-allreduce-fusion \
+          --quantization wfp8afp8 \
+          --speculative-config '{"method": "mtp", "num_speculative_tokens": 1, "num_model_steps": 1, "model": "'$model_path'"}' \
+          --graph-optimization-config '{"use_cudagraph": true, "draft_model_use_cudagraph": true}'
+    infer: |
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model GLM-4.5-Air \
+          --endpoint /v1/chat/completions \
+          --host 127.0.0.1 --port 2786 \
+          --dataset-name EBChat \
+          --dataset-path /workspace3/fxy/sglang/debug/0724_ShareGPT_range_1800_3000_num_5000_FD.jsonl \
+          --hyperparameter-path /workspace3/fxy/sglang/debug/request.yaml \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --num-prompts 5000 \
+          --max-concurrency 512
+
+  - name: fd_中短_MTP_c64
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export PYTHONPATH="/workspace3/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export FD_CUSTOM_AR_MAX_SIZE_MB=8
+      model_path=/workspace3/fxy/models/GLM-4.5-Air
+      /root/miniconda3/envs/fxy_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.api_server \
+          --model $model_path \
+          --port 2786 \
+          --metrics-port 2886 \
+          --engine-worker-queue-port 2986 \
+          --cache-queue-port 3086 \
+          --max-model-len 32768 \
+          --max-num-seqs 512 \
+          --tensor-parallel-size 4 \
+          --enable-overlap-schedule \
+          --enable-flashinfer-allreduce-fusion \
+          --quantization wfp8afp8 \
+          --speculative-config '{"method": "mtp", "num_speculative_tokens": 1, "num_model_steps": 1, "model": "'$model_path'"}' \
+          --graph-optimization-config '{"use_cudagraph": true, "draft_model_use_cudagraph": true}'
+    infer: |
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model GLM-4.5-Air \
+          --endpoint /v1/chat/completions \
+          --host 127.0.0.1 --port 2786 \
+          --dataset-name EBChat \
+          --dataset-path /workspace3/fxy/sglang/debug/0724_ShareGPT_range_1800_3000_num_5000_FD.jsonl \
+          --hyperparameter-path /workspace3/fxy/sglang/debug/request.yaml \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --num-prompts 5000 \
+          --max-concurrency 64
+
+  - name: fd_中短_默认_c512
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export PYTHONPATH="/workspace3/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export FD_CUSTOM_AR_MAX_SIZE_MB=8
+      /root/miniconda3/envs/fxy_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.api_server \
+          --model /workspace3/fxy/models/GLM-4.5-Air \
+          --port 2786 \
+          --metrics-port 2886 \
+          --engine-worker-queue-port 2986 \
+          --cache-queue-port 3086 \
+          --max-model-len 32768 \
+          --max-num-seqs 512 \
+          --tensor-parallel-size 4 \
+          --enable-overlap-schedule \
+          --quantization wfp8afp8
+    infer: |
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model GLM-4.5-Air \
+          --endpoint /v1/chat/completions \
+          --host 127.0.0.1 --port 2786 \
+          --dataset-name EBChat \
+          --dataset-path /workspace3/fxy/sglang/debug/0724_ShareGPT_range_1800_3000_num_5000_FD.jsonl \
+          --hyperparameter-path /workspace3/fxy/sglang/debug/request.yaml \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --num-prompts 5000 \
+          --max-concurrency 512
+
+  - name: fd_中短_默认_c64
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export PYTHONPATH="/workspace3/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export FD_CUSTOM_AR_MAX_SIZE_MB=8
+      /root/miniconda3/envs/fxy_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.api_server \
+          --model /workspace3/fxy/models/GLM-4.5-Air \
+          --port 2786 \
+          --metrics-port 2886 \
+          --engine-worker-queue-port 2986 \
+          --cache-queue-port 3086 \
+          --max-model-len 32768 \
+          --max-num-seqs 512 \
+          --tensor-parallel-size 4 \
+          --enable-overlap-schedule \
+          --quantization wfp8afp8
+    infer: |
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model GLM-4.5-Air \
+          --endpoint /v1/chat/completions \
+          --host 127.0.0.1 --port 2786 \
+          --dataset-name EBChat \
+          --dataset-path /workspace3/fxy/sglang/debug/0724_ShareGPT_range_1800_3000_num_5000_FD.jsonl \
+          --hyperparameter-path /workspace3/fxy/sglang/debug/request.yaml \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --num-prompts 5000 \
+          --max-concurrency 64
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # 二、多轮数据集  输入:8k  输出:200
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # - name: fd_多轮_MTP_c512
+  #   server: |
+  #     export CUDA_VISIBLE_DEVICES=4,5,6,7
+  #     export PYTHONPATH="/workspace3/fxy/FastDeploy:$PYTHONPATH"
+  #     export FD_SAMPLING_CLASS=rejection
+  #     export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+  #     export FD_CUSTOM_AR_MAX_SIZE_MB=8
+  #     model_path=/workspace3/fxy/models/GLM-4.5-Air
+  #     /root/miniconda3/envs/fxy_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.api_server \
+  #         --model $model_path \
+  #         --port 2786 \
+  #         --metrics-port 2886 \
+  #         --engine-worker-queue-port 2986 \
+  #         --cache-queue-port 3086 \
+  #         --max-model-len 131072 \
+  #         --max-num-seqs 512 \
+  #         --tensor-parallel-size 4 \
+  #         --load-choices default_v1 \
+  #         --enable-overlap-schedule \
+  #         --enable-flashinfer-allreduce-fusion \
+  #         --quantization wfp8afp8 \
+  #         --speculative-config '{"method": "mtp", "num_speculative_tokens": 1, "num_model_steps": 1, "model": "'$model_path'"}' \
+  #         --graph-optimization-config '{"use_cudagraph": true, "draft_model_use_cudagraph": true}'
+  #   infer: |
+  #     /root/miniconda3/envs/fxy_sglang/bin/python \
+  #         /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+  #         --backend openai-chat \
+  #         --model GLM-4.5-Air \
+  #         --endpoint /v1/chat/completions \
+  #         --host 127.0.0.1 --port 2786 \
+  #         --dataset-name EBChat \
+  #         --dataset-path /workspace3/fxy/sglang/debug/20260302_browsecomp_plus_processed_num_830_fd.jsonl \
+  #         --hyperparameter-path /workspace3/fxy/sglang/debug/request_duolun.yaml \
+  #         --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+  #         --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+  #         --num-prompts 830 \
+  #         --multi-turn \
+  #         --max-concurrency 512
+
+  - name: fd_多轮_MTP_c64
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export PYTHONPATH="/workspace3/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export FD_CUSTOM_AR_MAX_SIZE_MB=8
+      model_path=/workspace3/fxy/models/GLM-4.5-Air
+      /root/miniconda3/envs/fxy_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.api_server \
+          --model $model_path \
+          --port 2786 \
+          --metrics-port 2886 \
+          --engine-worker-queue-port 2986 \
+          --cache-queue-port 3086 \
+          --max-model-len 131072 \
+          --max-num-seqs 512 \
+          --tensor-parallel-size 4 \
+          --enable-overlap-schedule \
+          --enable-flashinfer-allreduce-fusion \
+          --quantization wfp8afp8 \
+          --speculative-config '{"method": "mtp", "num_speculative_tokens": 1, "num_model_steps": 1, "model": "'$model_path'"}' \
+          --graph-optimization-config '{"use_cudagraph": true, "draft_model_use_cudagraph": true}'
+    infer: |
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model GLM-4.5-Air \
+          --endpoint /v1/chat/completions \
+          --host 127.0.0.1 --port 2786 \
+          --dataset-name EBChat \
+          --dataset-path /workspace3/fxy/sglang/debug/20260302_browsecomp_plus_processed_num_830_fd.jsonl \
+          --hyperparameter-path /workspace3/fxy/sglang/debug/request_duolun.yaml \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --num-prompts 830 \
+          --multi-turn \
+          --max-concurrency 64
+
+  # - name: fd_多轮_默认_c512
+  #   server: |
+  #     export CUDA_VISIBLE_DEVICES=4,5,6,7
+  #     export PYTHONPATH="/workspace3/fxy/FastDeploy:$PYTHONPATH"
+  #     export FD_SAMPLING_CLASS=rejection
+  #     export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+  #     export FD_CUSTOM_AR_MAX_SIZE_MB=8
+  #     /root/miniconda3/envs/fxy_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.api_server \
+  #         --model /workspace3/fxy/models/GLM-4.5-Air \
+  #         --port 2786 \
+  #         --metrics-port 2886 \
+  #         --engine-worker-queue-port 2986 \
+  #         --cache-queue-port 3086 \
+  #         --max-model-len 131072 \
+  #         --max-num-seqs 512 \
+  #         --tensor-parallel-size 4 \
+  #         --load-choices default_v1 \
+  #         --enable-overlap-schedule \
+  #         --quantization wfp8afp8
+  #   infer: |
+  #     /root/miniconda3/envs/fxy_sglang/bin/python \
+  #         /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+  #         --backend openai-chat \
+  #         --model GLM-4.5-Air \
+  #         --endpoint /v1/chat/completions \
+  #         --host 127.0.0.1 --port 2786 \
+  #         --dataset-name EBChat \
+  #         --dataset-path /workspace3/fxy/sglang/debug/20260302_browsecomp_plus_processed_num_830_fd.jsonl \
+  #         --hyperparameter-path /workspace3/fxy/sglang/debug/request_duolun_fd.yaml \
+  #         --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+  #         --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+  #         --num-prompts 830 \
+  #         --multi-turn \
+  #         --max-concurrency 512
+
+  - name: fd_多轮_默认_c64
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export PYTHONPATH="/workspace3/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export FD_CUSTOM_AR_MAX_SIZE_MB=8
+      /root/miniconda3/envs/fxy_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.api_server \
+          --model /workspace3/fxy/models/GLM-4.5-Air \
+          --port 2786 \
+          --metrics-port 2886 \
+          --engine-worker-queue-port 2986 \
+          --cache-queue-port 3086 \
+          --max-model-len 131072 \
+          --max-num-seqs 512 \
+          --tensor-parallel-size 4 \
+          --enable-overlap-schedule \
+          --quantization wfp8afp8
+    infer: |
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model GLM-4.5-Air \
+          --endpoint /v1/chat/completions \
+          --host 127.0.0.1 --port 2786 \
+          --dataset-name EBChat \
+          --dataset-path /workspace3/fxy/sglang/debug/20260302_browsecomp_plus_processed_num_830_fd.jsonl \
+          --hyperparameter-path /workspace3/fxy/sglang/debug/request_duolun_fd.yaml \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --num-prompts 830 \
+          --multi-turn \
+          --max-concurrency 64
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # 三、长输入数据集  输入:36k  输出:50
+  #   baseline：默认配置
+  #   FA4_prefill_chunk_cpucache：FA4 + prefill num + chunksize + cpu cache
+  # ════════════════════════════════════════════════════════════════════════════
+
+  - name: fd_长输入_baseline_c512
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export PYTHONPATH="/workspace3/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export FD_CUSTOM_AR_MAX_SIZE_MB=8
+      /root/miniconda3/envs/fxy_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.api_server \
+          --model /workspace3/fxy/models/GLM-4.5-Air \
+          --port 2786 \
+          --metrics-port 2886 \
+          --engine-worker-queue-port 2986 \
+          --cache-queue-port 3086 \
+          --max-model-len 65536 \
+          --max-num-seqs 512 \
+          --tensor-parallel-size 4 \
+          --enable-overlap-schedule \
+          --enable-flashinfer-allreduce-fusion \
+          --quantization wfp8afp8
+    infer: |
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model GLM-4.5-Air \
+          --endpoint /v1/chat/completions \
+          --host 127.0.0.1 --port 2786 \
+          --dataset-name EBChat \
+          --dataset-path /workspace3/fxy/sglang/debug/260226_loogle_longdep_NarrativeQA_mix_prefix_input_avg_35k_num_6748_with_only_max_tokens_for_fastdeploy.jsonl \
+          --hyperparameter-path /workspace3/fxy/sglang/debug/request_changshuru.yaml \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --num-prompts 6748 \
+          --max-concurrency 512
+
+  - name: fd_长输入_baseline_c64
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export PYTHONPATH="/workspace3/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export FD_CUSTOM_AR_MAX_SIZE_MB=8
+      /root/miniconda3/envs/fxy_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.api_server \
+          --model /workspace3/fxy/models/GLM-4.5-Air \
+          --port 2786 \
+          --metrics-port 2886 \
+          --engine-worker-queue-port 2986 \
+          --cache-queue-port 3086 \
+          --max-model-len 65536 \
+          --max-num-seqs 512 \
+          --tensor-parallel-size 4 \
+          --enable-overlap-schedule \
+          --enable-flashinfer-allreduce-fusion \
+          --quantization wfp8afp8
+    infer: |
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model GLM-4.5-Air \
+          --endpoint /v1/chat/completions \
+          --host 127.0.0.1 --port 2786 \
+          --dataset-name EBChat \
+          --dataset-path /workspace3/fxy/sglang/debug/260226_loogle_longdep_NarrativeQA_mix_prefix_input_avg_35k_num_6748_with_only_max_tokens_for_fastdeploy.jsonl \
+          --hyperparameter-path /workspace3/fxy/sglang/debug/request_changshuru.yaml \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --num-prompts 6748 \
+          --max-concurrency 64
+
+  - name: fd_长输入_FA4_prefill_chunk_cpucache_c512
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export PYTHONPATH="/workspace3/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export FD_CUSTOM_AR_MAX_SIZE_MB=8
+      # export FD_ATTENTION_BACKEND=FLASH_ATTN
+      # export FLAGS_flash_attn_version=4
+      export MAX_PREFILL_NUM=128
+      model_path=/workspace3/fxy/models/GLM-4.5-Air
+      /root/miniconda3/envs/fxy_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.api_server \
+            --model $model_path \
+            --port 2786 \
+            --max-model-len 65536 \
+            --max-num-seqs 512 \
+            --tensor-parallel-size 4 \
+            --enable-overlap-schedule \
+            --quantization wfp8afp8 \
+            --max-long-partial-prefills 128 \
+            --max-num-partial-prefills 128 \
+            --max-num-batched-tokens 32768 \
+            --swap-space 512
+    infer: |
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model GLM-4.5-Air \
+          --endpoint /v1/chat/completions \
+          --host 127.0.0.1 --port 2786 \
+          --dataset-name EBChat \
+          --dataset-path /workspace3/fxy/sglang/debug/260226_loogle_longdep_NarrativeQA_mix_prefix_input_avg_35k_num_6748_with_only_max_tokens_for_fastdeploy.jsonl \
+          --hyperparameter-path /workspace3/fxy/sglang/debug/request_changshuru.yaml \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --num-prompts 6748 \
+          --max-concurrency 512
+
+  - name: fd_长输入_FA4_prefill_chunk_cpucache_c64
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export PYTHONPATH="/workspace3/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export FD_CUSTOM_AR_MAX_SIZE_MB=8
+      # export FD_ATTENTION_BACKEND=FLASH_ATTN
+      # export FLAGS_flash_attn_version=4
+      export MAX_PREFILL_NUM=128
+      model_path=/workspace3/fxy/models/GLM-4.5-Air
+      /root/miniconda3/envs/fxy_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.api_server \
+          --model $model_path \
+          --tensor-parallel-size 4 \
+          --max-num-seqs 256 \
+          --quantization "wfp8afp8" \
+          --max-long-partial-prefills 128 \
+          --max-num-partial-prefills 128 \
+          --max-num-batched-tokens 32768 \
+    infer: |
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model GLM-4.5-Air \
+          --endpoint /v1/chat/completions \
+          --host 127.0.0.1 --port 2786 \
+          --dataset-name EBChat \
+          --dataset-path /workspace3/fxy/sglang/debug/260226_loogle_longdep_NarrativeQA_mix_prefix_input_avg_35k_num_6748_with_only_max_tokens_for_fastdeploy.jsonl \
+          --hyperparameter-path /workspace3/fxy/sglang/debug/request_changshuru.yaml \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --num-prompts 6748 \
+          --max-concurrency 64
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # 四、长输出数据集  输入:680  输出:18k
+  # ════════════════════════════════════════════════════════════════════════════
+
+  - name: fd_长输出_MTP_c512
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export PYTHONPATH="/workspace3/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export FD_CUSTOM_AR_MAX_SIZE_MB=8
+      model_path=/workspace3/fxy/models/GLM-4.5-Air
+      /root/miniconda3/envs/fxy_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.api_server \
+          --model $model_path \
+          --port 2786 \
+          --metrics-port 2886 \
+          --engine-worker-queue-port 2986 \
+          --cache-queue-port 3086 \
+          --max-model-len 65536 \
+          --max-num-seqs 512 \
+          --tensor-parallel-size 4 \
+          --enable-overlap-schedule \
+          --enable-flashinfer-allreduce-fusion \
+          --quantization wfp8afp8 \
+          --speculative-config '{"method": "mtp", "num_speculative_tokens": 1, "num_model_steps": 1, "model": "'$model_path'"}' \
+          --graph-optimization-config '{"use_cudagraph": true, "draft_model_use_cudagraph": true}'
+    infer: |
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model GLM-4.5-Air \
+          --endpoint /v1/chat/completions \
+          --host 127.0.0.1 --port 2786 \
+          --dataset-name EBChat \
+          --dataset-path /workspace3/fxy/sglang/debug/eb5_ppo_data_v1126_reasoning_merge_data_v1_for_release_gbs384_text_shuffled_250_with_output_tokens.jsonl \
+          --hyperparameter-path /workspace3/fxy/sglang/debug/request_changshuchu.yaml \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --num-prompts 250 \
+          --max-concurrency 512
+
+  - name: fd_长输出_MTP_c64
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export PYTHONPATH="/workspace3/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export FD_CUSTOM_AR_MAX_SIZE_MB=8
+      model_path=/workspace3/fxy/models/GLM-4.5-Air
+      /root/miniconda3/envs/fxy_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.api_server \
+          --model $model_path \
+          --port 2786 \
+          --metrics-port 2886 \
+          --engine-worker-queue-port 2986 \
+          --cache-queue-port 3086 \
+          --max-model-len 65536 \
+          --max-num-seqs 512 \
+          --tensor-parallel-size 4 \
+          --enable-overlap-schedule \
+          --enable-flashinfer-allreduce-fusion \
+          --quantization wfp8afp8 \
+          --speculative-config '{"method": "mtp", "num_speculative_tokens": 1, "num_model_steps": 1, "model": "'$model_path'"}' \
+          --graph-optimization-config '{"use_cudagraph": true, "draft_model_use_cudagraph": true}'
+    infer: |
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model GLM-4.5-Air \
+          --endpoint /v1/chat/completions \
+          --host 127.0.0.1 --port 2786 \
+          --dataset-name EBChat \
+          --dataset-path /workspace3/fxy/sglang/debug/eb5_ppo_data_v1126_reasoning_merge_data_v1_for_release_gbs384_text_shuffled_250_with_output_tokens.jsonl \
+          --hyperparameter-path /workspace3/fxy/sglang/debug/request_changshuchu.yaml \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --num-prompts 250 \
+          --max-concurrency 64
+
+  - name: fd_长输出_默认_c512
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export PYTHONPATH="/workspace3/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export FD_CUSTOM_AR_MAX_SIZE_MB=8
+      /root/miniconda3/envs/fxy_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.api_server \
+          --model /workspace3/fxy/models/GLM-4.5-Air \
+          --port 2786 \
+          --metrics-port 2886 \
+          --engine-worker-queue-port 2986 \
+          --cache-queue-port 3086 \
+          --max-model-len 65536 \
+          --max-num-seqs 512 \
+          --tensor-parallel-size 4 \
+          --enable-overlap-schedule \
+          --quantization wfp8afp8
+    infer: |
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model GLM-4.5-Air \
+          --endpoint /v1/chat/completions \
+          --host 127.0.0.1 --port 2786 \
+          --dataset-name EBChat \
+          --dataset-path /workspace3/fxy/sglang/debug/eb5_ppo_data_v1126_reasoning_merge_data_v1_for_release_gbs384_text_shuffled_250_with_output_tokens.jsonl \
+          --hyperparameter-path /workspace3/fxy/sglang/debug/request_changshuchu.yaml \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --num-prompts 250 \
+          --max-concurrency 512
+
+  - name: fd_长输出_默认_c64
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export PYTHONPATH="/workspace3/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export FD_CUSTOM_AR_MAX_SIZE_MB=8
+      /root/miniconda3/envs/fxy_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.api_server \
+          --model /workspace3/fxy/models/GLM-4.5-Air \
+          --port 2786 \
+          --metrics-port 2886 \
+          --engine-worker-queue-port 2986 \
+          --cache-queue-port 3086 \
+          --max-model-len 65536 \
+          --max-num-seqs 512 \
+          --tensor-parallel-size 4 \
+          --enable-overlap-schedule \
+          --quantization wfp8afp8
+    infer: |
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model GLM-4.5-Air \
+          --endpoint /v1/chat/completions \
+          --host 127.0.0.1 --port 2786 \
+          --dataset-name EBChat \
+          --dataset-path /workspace3/fxy/sglang/debug/eb5_ppo_data_v1126_reasoning_merge_data_v1_for_release_gbs384_text_shuffled_250_with_output_tokens.jsonl \
+          --hyperparameter-path /workspace3/fxy/sglang/debug/request_changshuchu.yaml \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --num-prompts 250 \
+          --max-concurrency 64

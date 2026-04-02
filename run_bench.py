@@ -66,6 +66,74 @@ READY_MARKERS = {
 }
 
 
+def get_framework_version(framework: str, experiments: list) -> dict:
+    """从实验配置的 server 命令中自动提取框架源码路径，获取版本和 git commit"""
+    info = {"version": "unknown", "commit": "unknown", "commit_short": "unknown", "extra": ""}
+
+    first_server_cmd = ""
+    for exp in experiments:
+        cmd = exp.get("server", "").strip()
+        if cmd:
+            first_server_cmd = cmd
+            break
+    if not first_server_cmd:
+        return info
+
+    if framework == "fd":
+        repo_path = _extract_path(first_server_cmd, r'PYTHONPATH="?([^":\s]+FastDeploy)')
+        if repo_path:
+            info.update(_git_info(repo_path))
+            vf = Path(repo_path) / "fastdeploy" / "version.txt"
+            if vf.exists():
+                info["extra"] = vf.read_text().strip()
+
+    elif framework == "sglang":
+        repo_path = _extract_path(first_server_cmd, r'PYTHONPATH=([^":\s]+sglang/python)')
+        if repo_path:
+            repo_path = str(Path(repo_path).parent)
+        if repo_path:
+            info.update(_git_info(repo_path))
+        python_bin = _extract_path(first_server_cmd, r'(/\S+/bin/python\S*)')
+        if python_bin:
+            ver = _run_quiet([python_bin, "-c",
+                              "from sglang.version import __version__; print(__version__)"])
+            if ver:
+                info["version"] = ver
+
+    return info
+
+
+def _extract_path(cmd: str, pattern: str) -> str | None:
+    for line in cmd.splitlines():
+        m = re.search(pattern, line)
+        if m and Path(m.group(1)).exists():
+            return m.group(1)
+    return None
+
+
+def _git_info(repo_path: str) -> dict:
+    result = {}
+    commit = _run_quiet(["git", "-C", repo_path, "rev-parse", "HEAD"])
+    if commit:
+        result["commit"] = commit
+        result["commit_short"] = commit[:9]
+    desc = _run_quiet(["git", "-C", repo_path, "describe", "--tags", "--always"])
+    if desc:
+        result["version"] = desc
+    branch = _run_quiet(["git", "-C", repo_path, "rev-parse", "--abbrev-ref", "HEAD"])
+    if branch:
+        result["branch"] = branch
+    return result
+
+
+def _run_quiet(cmd: list, timeout: int = 10) -> str | None:
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.stdout.strip() if r.returncode == 0 else None
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+
 def should_include(key: str) -> bool:
     for grp in SKIP_GROUPS:
         if grp in key:
@@ -131,7 +199,8 @@ def start_server(cmd: str, log_file: Path) -> subprocess.Popen:
 
 # ── Kill 服务 ─────────────────────────────────────────────────────────────────
 def kill_server(port: int, proc: subprocess.Popen = None,
-                extra_ports: list = None, cuda_devices: str = None):
+                extra_ports: list = None, cuda_devices: str = None,
+                framework: str = "fd"):
     all_ports = [port] + [port + offset for offset in (extra_ports or [])]
     print(f"  kill 服务（端口 {all_ports}）...", flush=True)
     killed = set()
@@ -171,19 +240,20 @@ def kill_server(port: int, proc: subprocess.Popen = None,
     else:
         print("  未发现需要 kill 的进程", flush=True)
 
-    # 4. 清理 FD Unix domain socket 文件（FD_ENGINE_TASK_QUEUE_WITH_SHM=1 时会留下）
-    sock_candidates = [f"/dev/shm/fd_task_queue_{p}.sock" for p in all_ports]
-    sock_candidates += glob.glob("/dev/shm/fd_*.sock")
-    cleaned = set()
-    for sock in sock_candidates:
-        if os.path.exists(sock):
-            try:
-                os.remove(sock)
-                cleaned.add(sock)
-            except OSError:
-                pass
-    if cleaned:
-        print(f"  已清理 socket 文件: {', '.join(sorted(cleaned))}", flush=True)
+    # 4. 清理 FD Unix domain socket 文件（仅 FD 框架需要）
+    if framework == "fd":
+        sock_candidates = [f"/dev/shm/fd_task_queue_{p}.sock" for p in all_ports]
+        sock_candidates += glob.glob("/dev/shm/fd_*.sock")
+        cleaned = set()
+        for sock in sock_candidates:
+            if os.path.exists(sock):
+                try:
+                    os.remove(sock)
+                    cleaned.add(sock)
+                except OSError:
+                    pass
+        if cleaned:
+            print(f"  已清理 socket 文件: {', '.join(sorted(cleaned))}", flush=True)
 
 
 # ── 运行压测 ──────────────────────────────────────────────────────────────────
@@ -230,7 +300,7 @@ def write_excel(all_results: list, out_path: Path):
     ws = wb.active
     ws.title = "Results"
 
-    fixed_cols  = ["框架", "实验名称", "运行时间", "状态", "起服务脚本", "起请求脚本"]
+    fixed_cols  = ["框架", "实验名称", "版本", "Commit", "运行时间", "状态", "起服务脚本", "起请求脚本"]
     metric_cols = [PRIORITY_LABEL.get(k, k) for k in ordered_keys]
     header = fixed_cols + metric_cols
 
@@ -250,10 +320,12 @@ def write_excel(all_results: list, out_path: Path):
 
         ws.cell(row=ri, column=1, value=r.get("framework", ""))
         ws.cell(row=ri, column=2, value=r["name"])
-        ws.cell(row=ri, column=3, value=r["time"])
-        ws.cell(row=ri, column=4, value=status)
-        ws.cell(row=ri, column=5, value=r.get("server_cmd", ""))
-        ws.cell(row=ri, column=6, value=r.get("infer_cmd", ""))
+        ws.cell(row=ri, column=3, value=r.get("version", ""))
+        ws.cell(row=ri, column=4, value=r.get("commit", ""))
+        ws.cell(row=ri, column=5, value=r["time"])
+        ws.cell(row=ri, column=6, value=status)
+        ws.cell(row=ri, column=7, value=r.get("server_cmd", ""))
+        ws.cell(row=ri, column=8, value=r.get("infer_cmd", ""))
 
         for ci, k in enumerate(ordered_keys, len(fixed_cols) + 1):
             ws.cell(row=ri, column=ci, value=r.get("metrics", {}).get(k))
@@ -268,10 +340,10 @@ def write_excel(all_results: list, out_path: Path):
             *(len(str(ws.cell(row=ri, column=ci).value or ""))
               for ri in range(2, len(all_results) + 2)),
         )
-        limit = 60 if ci in (5, 6) else 30
+        limit = 60 if ci in (7, 8) else 30
         ws.column_dimensions[col_letter].width = min(max_len + 2, limit)
 
-    ws.freeze_panes = "G2"
+    ws.freeze_panes = "I2"
     wb.save(out_path)
     print(f"\n[Excel] 已保存: {out_path}")
 
@@ -312,6 +384,10 @@ def show_menu(experiments: list, framework: str) -> list:
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
 def main():
+    # 清理代理环境变量，避免 localhost 请求被 Squid 等代理拦截
+    for key in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
+        os.environ.pop(key, None)
+
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=Path(__file__).parent / "bench.yaml",
@@ -349,21 +425,41 @@ def main():
     experiments = cfg.get("experiments", [])
 
     if args.kill:
-        kill_server(port, extra_ports=extra_ports, cuda_devices=cuda_devices)
+        kill_server(port, extra_ports=extra_ports, cuda_devices=cuda_devices, framework=framework)
         return
 
     selection = show_menu(experiments, framework)
     if selection == "kill":
-        kill_server(port, extra_ports=extra_ports, cuda_devices=cuda_devices)
+        kill_server(port, extra_ports=extra_ports, cuda_devices=cuda_devices, framework=framework)
         return
     if not selection:
         print("未选择任何实验，退出。")
         return
 
+    # 获取框架版本信息
+    fw_ver = get_framework_version(framework, experiments)
+    ver_line = f"{fw_ver['version']}  commit={fw_ver['commit_short']}"
+    if fw_ver.get("branch"):
+        ver_line += f"  branch={fw_ver['branch']}"
+    print(f"\n[版本] {framework}: {ver_line}")
+    if fw_ver.get("extra"):
+        for line in fw_ver["extra"].splitlines():
+            print(f"        {line}")
+
     run_id  = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = results_dir / f"{framework}_{run_id}"
     run_dir.mkdir(parents=True, exist_ok=True)
     print(f"\n框架: {framework}  结果目录: {run_dir}\n")
+
+    # 保存版本信息到结果目录
+    with open(run_dir / "version_info.txt", "w") as f:
+        f.write(f"framework: {framework}\n")
+        f.write(f"version: {fw_ver['version']}\n")
+        f.write(f"commit: {fw_ver['commit']}\n")
+        if fw_ver.get("branch"):
+            f.write(f"branch: {fw_ver['branch']}\n")
+        if fw_ver.get("extra"):
+            f.write(f"\n{fw_ver['extra']}\n")
 
     all_results = []
     excel_path  = run_dir / f"{framework}_bench_{run_id}.xlsx"
@@ -391,14 +487,14 @@ def main():
                 server_cmd = f"export FD_LOG_DIR={fd_log_dir}\n" + server_cmd
                 print(f"  FD 日志目录 → {fd_log_dir.name}", flush=True)
             print(f"  预清理残留进程...", flush=True)
-            kill_server(port, extra_ports=extra_ports, cuda_devices=cuda_devices)
+            kill_server(port, extra_ports=extra_ports, cuda_devices=cuda_devices, framework=framework)
             time.sleep(3)
             print(f"  启动服务 → {server_log.name}", flush=True)
             proc = start_server(server_cmd, server_log)
             ready = wait_for_server(server_log, ready_timeout, ready_marker)
             if not ready:
                 print(f"  [SKIP] 服务启动超时，跳过实验 {name}")
-                kill_server(port, proc, extra_ports=extra_ports, cuda_devices=cuda_devices)
+                kill_server(port, proc, extra_ports=extra_ports, cuda_devices=cuda_devices, framework=framework)
                 all_results.append({
                     "framework": framework,
                     "name": name,
@@ -440,6 +536,8 @@ def main():
             "name": name,
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "status": status,
+            "version": fw_ver.get("version", ""),
+            "commit": fw_ver.get("commit_short", ""),
             "server_cmd": server_cmd,
             "infer_cmd": infer_cmd,
             "metrics": metrics,
@@ -451,7 +549,7 @@ def main():
 
         # 4. Kill 服务
         if server_cmd:
-            kill_server(port, proc, extra_ports=extra_ports, cuda_devices=cuda_devices)
+            kill_server(port, proc, extra_ports=extra_ports, cuda_devices=cuda_devices, framework=framework)
             print(f"  等待 GPU 显存释放 {shutdown_wait}s ...", flush=True)
             time.sleep(shutdown_wait)
 
