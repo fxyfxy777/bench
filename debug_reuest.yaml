@@ -1,0 +1,2 @@
+chat_template_kwargs: {"enable_thinking": false}
+min_tokens: 1024

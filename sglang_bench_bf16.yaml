@@ -46,7 +46,7 @@ experiments:
       export PYTHONPATH=/workspace3/fxy/sglang/python:$PYTHONPATH
       export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
       /root/miniconda3/envs/fxy_sglang/bin/python -m sglang.launch_server \
-          --model-path /workspace2/fanxiangyu/models/GLM-4.5-Air-FP8 \
+          --model-path /workspace3/fxy/models/GLM-4.5-Air \
           --host 0.0.0.0 --port 3015 \
           --tensor-parallel-size 4 \
           --max-running-requests 512 \
@@ -76,7 +76,7 @@ experiments:
       export PYTHONPATH=/workspace3/fxy/sglang/python:$PYTHONPATH
       export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
       /root/miniconda3/envs/fxy_sglang/bin/python -m sglang.launch_server \
-          --model-path /workspace2/fanxiangyu/models/GLM-4.5-Air-FP8 \
+          --model-path /workspace3/fxy/models/GLM-4.5-Air \
           --host 0.0.0.0 --port 3015 \
           --tensor-parallel-size 4 \
           --max-running-requests 512 \
@@ -106,7 +106,7 @@ experiments:
       export PYTHONPATH=/workspace3/fxy/sglang/python:$PYTHONPATH
       export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
       /root/miniconda3/envs/fxy_sglang/bin/python -m sglang.launch_server \
-          --model-path /workspace2/fanxiangyu/models/GLM-4.5-Air-FP8 \
+          --model-path /workspace3/fxy/models/GLM-4.5-Air \
           --host 0.0.0.0 --port 3015 \
           --tensor-parallel-size 4 \
           --max-running-requests 512 \
@@ -132,7 +132,7 @@ experiments:
       export PYTHONPATH=/workspace3/fxy/sglang/python:$PYTHONPATH
       export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
       /root/miniconda3/envs/fxy_sglang/bin/python -m sglang.launch_server \
-          --model-path /workspace2/fanxiangyu/models/GLM-4.5-Air-FP8 \
+          --model-path /workspace3/fxy/models/GLM-4.5-Air \
           --host 0.0.0.0 --port 3015 \
           --tensor-parallel-size 4 \
           --max-running-requests 512 \
@@ -162,7 +162,7 @@ experiments:
   #     export PYTHONPATH=/workspace3/fxy/sglang/python:$PYTHONPATH
   #     export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
   #     /root/miniconda3/envs/fxy_sglang/bin/python -m sglang.launch_server \
-  #         --model-path /workspace2/fanxiangyu/models/GLM-4.5-Air-FP8 \
+  #         --model-path /workspace3/fxy/models/GLM-4.5-Air \
   #         --host 0.0.0.0 --port 3015 \
   #         --tensor-parallel-size 4 \
   #         --max-running-requests 512 \
@@ -193,7 +193,7 @@ experiments:
       export PYTHONPATH=/workspace3/fxy/sglang/python:$PYTHONPATH
       export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
       /root/miniconda3/envs/fxy_sglang/bin/python -m sglang.launch_server \
-          --model-path /workspace2/fanxiangyu/models/GLM-4.5-Air-FP8 \
+          --model-path /workspace3/fxy/models/GLM-4.5-Air \
           --host 0.0.0.0 --port 3015 \
           --tensor-parallel-size 4 \
           --max-running-requests 512 \
@@ -224,7 +224,7 @@ experiments:
   #     export PYTHONPATH=/workspace3/fxy/sglang/python:$PYTHONPATH
   #     export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
   #     /root/miniconda3/envs/fxy_sglang/bin/python -m sglang.launch_server \
-  #         --model-path /workspace2/fanxiangyu/models/GLM-4.5-Air-FP8 \
+  #         --model-path /workspace3/fxy/models/GLM-4.5-Air \
   #         --host 0.0.0.0 --port 3015 \
   #         --tensor-parallel-size 4 \
   #         --max-running-requests 512 \
@@ -251,7 +251,7 @@ experiments:
       export PYTHONPATH=/workspace3/fxy/sglang/python:$PYTHONPATH
       export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
       /root/miniconda3/envs/fxy_sglang/bin/python -m sglang.launch_server \
-          --model-path /workspace2/fanxiangyu/models/GLM-4.5-Air-FP8 \
+          --model-path /workspace3/fxy/models/GLM-4.5-Air \
           --host 0.0.0.0 --port 3015 \
           --tensor-parallel-size 4 \
           --max-running-requests 512 \
@@ -284,7 +284,7 @@ experiments:
       export PYTHONPATH=/workspace3/fxy/sglang/python:$PYTHONPATH
       export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
       /root/miniconda3/envs/fxy_sglang/bin/python -m sglang.launch_server \
-          --model-path /workspace2/fanxiangyu/models/GLM-4.5-Air-FP8 \
+          --model-path /workspace3/fxy/models/GLM-4.5-Air \
           --host 0.0.0.0 --port 3015 \
           --tensor-parallel-size 4 \
           --max-running-requests 512 \
@@ -311,7 +311,7 @@ experiments:
       export PYTHONPATH=/workspace3/fxy/sglang/python:$PYTHONPATH
       export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
       /root/miniconda3/envs/fxy_sglang/bin/python -m sglang.launch_server \
-          --model-path /workspace2/fanxiangyu/models/GLM-4.5-Air-FP8 \
+          --model-path /workspace3/fxy/models/GLM-4.5-Air \
           --host 0.0.0.0 --port 3015 \
           --tensor-parallel-size 4 \
           --max-running-requests 512 \
@@ -338,7 +338,7 @@ experiments:
       export PYTHONPATH=/workspace3/fxy/sglang/python:$PYTHONPATH
       export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
       /root/miniconda3/envs/fxy_sglang/bin/python -m sglang.launch_server \
-          --model-path /workspace2/fanxiangyu/models/GLM-4.5-Air-FP8 \
+          --model-path /workspace3/fxy/models/GLM-4.5-Air \
           --host 0.0.0.0 --port 3015 \
           --tensor-parallel-size 4 \
           --max-running-requests 512 \
@@ -364,7 +364,7 @@ experiments:
       export PYTHONPATH=/workspace3/fxy/sglang/python:$PYTHONPATH
       export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
       /root/miniconda3/envs/fxy_sglang/bin/python -m sglang.launch_server \
-          --model-path /workspace2/fanxiangyu/models/GLM-4.5-Air-FP8 \
+          --model-path /workspace3/fxy/models/GLM-4.5-Air \
           --host 0.0.0.0 --port 3015 \
           --tensor-parallel-size 4 \
           --max-running-requests 512 \
@@ -393,7 +393,7 @@ experiments:
       export PYTHONPATH=/workspace3/fxy/sglang/python:$PYTHONPATH
       export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
       /root/miniconda3/envs/fxy_sglang/bin/python -m sglang.launch_server \
-          --model-path /workspace2/fanxiangyu/models/GLM-4.5-Air-FP8 \
+          --model-path /workspace3/fxy/models/GLM-4.5-Air \
           --host 0.0.0.0 --port 3015 \
           --tensor-parallel-size 4 \
           --max-running-requests 512 \
@@ -426,7 +426,7 @@ experiments:
       export PYTHONPATH=/workspace3/fxy/sglang/python:$PYTHONPATH
       export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
       /root/miniconda3/envs/fxy_sglang/bin/python -m sglang.launch_server \
-          --model-path /workspace2/fanxiangyu/models/GLM-4.5-Air-FP8 \
+          --model-path /workspace3/fxy/models/GLM-4.5-Air \
           --host 0.0.0.0 --port 3015 \
           --tensor-parallel-size 4 \
           --max-running-requests 512 \
@@ -456,7 +456,7 @@ experiments:
       export PYTHONPATH=/workspace3/fxy/sglang/python:$PYTHONPATH
       export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
       /root/miniconda3/envs/fxy_sglang/bin/python -m sglang.launch_server \
-          --model-path /workspace2/fanxiangyu/models/GLM-4.5-Air-FP8 \
+          --model-path /workspace3/fxy/models/GLM-4.5-Air \
           --host 0.0.0.0 --port 3015 \
           --tensor-parallel-size 4 \
           --max-running-requests 512 \
@@ -486,7 +486,7 @@ experiments:
       export PYTHONPATH=/workspace3/fxy/sglang/python:$PYTHONPATH
       export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
       /root/miniconda3/envs/fxy_sglang/bin/python -m sglang.launch_server \
-          --model-path /workspace2/fanxiangyu/models/GLM-4.5-Air-FP8 \
+          --model-path /workspace3/fxy/models/GLM-4.5-Air \
           --host 0.0.0.0 --port 3015 \
           --tensor-parallel-size 4 \
           --max-running-requests 512 \
@@ -512,7 +512,7 @@ experiments:
       export PYTHONPATH=/workspace3/fxy/sglang/python:$PYTHONPATH
       export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
       /root/miniconda3/envs/fxy_sglang/bin/python -m sglang.launch_server \
-          --model-path /workspace2/fanxiangyu/models/GLM-4.5-Air-FP8 \
+          --model-path /workspace3/fxy/models/GLM-4.5-Air \
           --host 0.0.0.0 --port 3015 \
           --tensor-parallel-size 4 \
           --max-running-requests 512 \
@@ -538,7 +538,7 @@ experiments:
       export PYTHONPATH=/workspace3/fxy/sglang/python:$PYTHONPATH
       export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
       /root/miniconda3/envs/fxy_sglang/bin/python -m sglang.launch_server \
-          --model-path /workspace2/fanxiangyu/models/GLM-4.5-Air-FP8 \
+          --model-path /workspace3/fxy/models/GLM-4.5-Air \
           --host 0.0.0.0 --port 3015 \
           --tensor-parallel-size 4 \
           --max-running-requests 512 \

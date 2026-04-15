@@ -46,7 +46,8 @@ experiments:
           --speculative-config '{"method": "mtp", "num_speculative_tokens": 1, "num_model_steps": 1, "model": "'$model_path'"}' \
           --graph-optimization-config '{"use_cudagraph": true, "draft_model_use_cudagraph": true}'
     infer: |
-      /root/miniconda3/envs/fxy_sglang/bin/python /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
           --backend openai-chat \
           --model GLM-4.5-Air \
           --endpoint /v1/chat/completions \
@@ -82,7 +83,8 @@ experiments:
           --speculative-config '{"method": "mtp", "num_speculative_tokens": 1, "num_model_steps": 1, "model": "'$model_path'"}' \
           --graph-optimization-config '{"use_cudagraph": true, "draft_model_use_cudagraph": true}'
     infer: |
-      /root/miniconda3/envs/fxy_sglang/bin/python /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
           --backend openai-chat \
           --model GLM-4.5-Air \
           --endpoint /v1/chat/completions \
@@ -114,7 +116,8 @@ experiments:
           --enable-overlap-schedule \
           --quantization wfp8afp8
     infer: |
-      /root/miniconda3/envs/fxy_sglang/bin/python /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
           --backend openai-chat \
           --model GLM-4.5-Air \
           --endpoint /v1/chat/completions \
@@ -146,7 +149,8 @@ experiments:
           --enable-overlap-schedule \
           --quantization wfp8afp8
     infer: |
-      /root/miniconda3/envs/fxy_sglang/bin/python /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
           --backend openai-chat \
           --model GLM-4.5-Air \
           --endpoint /v1/chat/completions \
@@ -228,7 +232,8 @@ experiments:
           --graph-optimization-config '{"use_cudagraph": true, "draft_model_use_cudagraph": true}' \
           --enable-flashinfer-allreduce-fusion
     infer: |
-      /root/miniconda3/envs/fxy_sglang/bin/python /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
           --backend openai-chat \
           --model GLM-4.5-Air \
           --endpoint /v1/chat/completions \
@@ -277,9 +282,9 @@ experiments:
   #         --multi-turn \
   #         --max-concurrency 512
 
-  - name: fd_多轮_默认_c64
+  - name: fd_多轮_默认_c24_bf16_debugForRl
     server: |
-      export CUDA_VISIBLE_DEVICES=0,1,2,3
+      export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
       export PYTHONPATH="/workspace3/fxy/FastDeploy:$PYTHONPATH"
       export FD_SAMPLING_CLASS=rejection
       export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
@@ -293,9 +298,11 @@ experiments:
           --max-model-len 131072 \
           --max-num-seqs 128 \
           --tensor-parallel-size 4 \
-          --quantization wfp8afp8
+          --data-parallel-size 2 \
+          --enable-expert-parallel
     infer: |
-      /root/miniconda3/envs/fxy_sglang/bin/python /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
           --backend openai-chat \
           --model GLM-4.5-Air \
           --endpoint /v1/chat/completions \
@@ -307,7 +314,7 @@ experiments:
           --metric-percentiles 80,95,99,99.9,99.95,99.99 \
           --num-prompts 830 \
           --multi-turn \
-          --max-concurrency 64
+          --max-concurrency 24
 
   # ════════════════════════════════════════════════════════════════════════════
   # 三、长输入数据集  输入:36k  输出:50
@@ -335,7 +342,8 @@ experiments:
           --enable-flashinfer-allreduce-fusion \
           --quantization wfp8afp8
     infer: |
-      /root/miniconda3/envs/fxy_sglang/bin/python /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
           --backend openai-chat \
           --model GLM-4.5-Air \
           --endpoint /v1/chat/completions \
@@ -348,13 +356,15 @@ experiments:
           --num-prompts 6748 \
           --max-concurrency 512
 
-  - name: fd_长输入_baseline_c64
+  - name: fd_长输入_baseline_c24_tp8_yuanle_debug
     server: |
-      export CUDA_VISIBLE_DEVICES=0,1,2,3
-      export PYTHONPATH="/workspace3/fxy/FastDeploy:$PYTHONPATH"
+      export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+      export PYTHONPATH="/workspace3/fxy/FastDeploy_RL:$PYTHONPATH"
       export FD_SAMPLING_CLASS=rejection
       export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
       export FD_CUSTOM_AR_MAX_SIZE_MB=8
+      # export FD_ATTENTION_BACKEND=FLASH_ATTN
+      # export FLAGS_flash_attn_version=4
       /root/miniconda3/envs/fxy_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.api_server \
           --model /workspace3/fxy/models/GLM-4.5-Air \
           --port 2786 \
@@ -362,24 +372,25 @@ experiments:
           --engine-worker-queue-port 2986 \
           --cache-queue-port 3086 \
           --max-model-len 65536 \
-          --max-num-seqs 512 \
-          --tensor-parallel-size 4 \
-          --enable-overlap-schedule \
-          --enable-flashinfer-allreduce-fusion \
-          --quantization wfp8afp8
+          --max-num-seqs 256 \
+          --data-parallel-size 1 \
+          --tensor-parallel-size 8 \
+          --enable-expert-parallel \
+          --enable-overlap-schedule
     infer: |
-      /root/miniconda3/envs/fxy_sglang/bin/python /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
           --backend openai-chat \
           --model GLM-4.5-Air \
           --endpoint /v1/chat/completions \
           --host 127.0.0.1 --port 2786 \
           --dataset-name EBChat \
-          --dataset-path /workspace3/fxy/sglang/debug/260226_loogle_longdep_NarrativeQA_mix_prefix_input_avg_35k_num_6748_with_only_max_tokens_for_fastdeploy.jsonl \
-          --hyperparameter-path /workspace3/fxy/sglang/debug/request_changshuru.yaml \
+          --dataset-path /workspace3/fxy/sglang/debug/merged_data_ebchat.jsonl \
+          --hyperparameter-path /workspace3/fxy/bench/debug_reuest.yaml \
           --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
           --metric-percentiles 80,95,99,99.9,99.95,99.99 \
-          --num-prompts 6748 \
-          --max-concurrency 64
+          --num-prompts 13496 \
+          --max-concurrency 24
 
   - name: fd_长输入_FA4_prefill_chunk_cpucache_c512
     server: |
@@ -405,7 +416,8 @@ experiments:
             --max-num-batched-tokens 32768 \
             --swap-space 512
     infer: |
-      /root/miniconda3/envs/fxy_sglang/bin/python /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
           --backend openai-chat \
           --model GLM-4.5-Air \
           --endpoint /v1/chat/completions \
@@ -438,7 +450,8 @@ experiments:
           --max-num-partial-prefills 128 \
           --max-num-batched-tokens 32768 \
     infer: |
-      /root/miniconda3/envs/fxy_sglang/bin/python /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
           --backend openai-chat \
           --model GLM-4.5-Air \
           --endpoint /v1/chat/completions \
@@ -478,7 +491,8 @@ experiments:
           --speculative-config '{"method": "mtp", "num_speculative_tokens": 1, "num_model_steps": 1, "model": "'$model_path'"}' \
           --graph-optimization-config '{"use_cudagraph": true, "draft_model_use_cudagraph": true}'
     infer: |
-      /root/miniconda3/envs/fxy_sglang/bin/python /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
           --backend openai-chat \
           --model GLM-4.5-Air \
           --endpoint /v1/chat/completions \
@@ -514,7 +528,8 @@ experiments:
           --speculative-config '{"method": "mtp", "num_speculative_tokens": 1, "num_model_steps": 1, "model": "'$model_path'"}' \
           --graph-optimization-config '{"use_cudagraph": true, "draft_model_use_cudagraph": true}'
     infer: |
-      /root/miniconda3/envs/fxy_sglang/bin/python /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
           --backend openai-chat \
           --model GLM-4.5-Air \
           --endpoint /v1/chat/completions \
@@ -546,7 +561,8 @@ experiments:
           --enable-overlap-schedule \
           --quantization wfp8afp8
     infer: |
-      /root/miniconda3/envs/fxy_sglang/bin/python /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
           --backend openai-chat \
           --model GLM-4.5-Air \
           --endpoint /v1/chat/completions \
@@ -578,7 +594,8 @@ experiments:
           --enable-overlap-schedule \
           --quantization wfp8afp8
     infer: |
-      /root/miniconda3/envs/fxy_sglang/bin/python /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
           --backend openai-chat \
           --model GLM-4.5-Air \
           --endpoint /v1/chat/completions \
@@ -610,7 +627,8 @@ experiments:
           --enable-overlap-schedule \
           --quantization wfp8afp8
     infer: |
-      /root/miniconda3/envs/fxy_sglang/bin/python /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+      /root/miniconda3/envs/fxy_sglang/bin/python \
+          /workspace3/fxy/FastDeploy/benchmarks/benchmark_serving.py \
           --backend openai-chat \
           --model GLM-4.5-Air \
           --endpoint /v1/chat/completions \

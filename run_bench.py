@@ -65,6 +65,16 @@ READY_MARKERS = {
     "sglang": "Application startup complete",
 }
 
+# 服务启动失败的快速退出标志
+ERROR_MARKERS = [
+    "error: unrecognized arguments",
+    "Traceback (most recent call last)",
+    "SystemExit",
+    "RuntimeError",
+    "CUDA out of memory",
+    "Address already in use",
+]
+
 
 def get_framework_version(framework: str, experiments: list) -> dict:
     """从实验配置的 server 命令中自动提取框架源码路径，获取版本和 git commit"""
@@ -167,7 +177,8 @@ def parse_output(text: str) -> dict:
 
 
 # ── 等待服务就绪 ──────────────────────────────────────────────────────────────
-def wait_for_server(log_file: Path, timeout: int, ready_marker: str) -> bool:
+def wait_for_server(log_file: Path, timeout: int, ready_marker: str) -> str:
+    """返回 'ready' | 'error' | 'timeout'"""
     print(f"  等待服务就绪（监听 {log_file.name}），超时 {timeout}s ...", flush=True)
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -175,14 +186,18 @@ def wait_for_server(log_file: Path, timeout: int, ready_marker: str) -> bool:
             text = log_file.read_text(errors="replace")
             if ready_marker in text:
                 print("  ✓ 服务已就绪", flush=True)
-                return True
+                return "ready"
+            for marker in ERROR_MARKERS:
+                if marker in text:
+                    print(f"\n  ✗ 检测到启动报错: {marker!r}", flush=True)
+                    return "error"
         except FileNotFoundError:
             pass
         remaining = int(deadline - time.time())
         print(f"  ... 等待启动，剩余 {remaining}s", end="\r", flush=True)
         time.sleep(3)
     print("\n  ✗ 等待超时", flush=True)
-    return False
+    return "timeout"
 
 
 # ── 启动服务（后台） ──────────────────────────────────────────────────────────
@@ -200,7 +215,11 @@ def start_server(cmd: str, log_file: Path) -> subprocess.Popen:
 # ── Kill 服务 ─────────────────────────────────────────────────────────────────
 def kill_server(port: int, proc: subprocess.Popen = None,
                 extra_ports: list = None, cuda_devices: str = None,
-                framework: str = "fd"):
+                framework: str = "fd", nsys_flush_wait: int = 0):
+    """
+    nsys_flush_wait > 0 时，先对端口进程发 SIGTERM 并等待 nsys 写文件，
+    再执行 SIGKILL 兜底。适用于 server 命令包裹了 nsys profile 的场景。
+    """
     all_ports = [port] + [port + offset for offset in (extra_ports or [])]
     print(f"  kill 服务（端口 {all_ports}）...", flush=True)
     killed = set()
@@ -211,8 +230,19 @@ def kill_server(port: int, proc: subprocess.Popen = None,
         for pid in r.stdout.strip().splitlines():
             pid = pid.strip()
             if pid:
-                subprocess.run(f"kill -9 {pid}", shell=True)
+                if nsys_flush_wait > 0:
+                    # 先 SIGTERM，让 nsys 有机会 flush 写出 .nsys-rep 文件
+                    subprocess.run(f"kill -15 {pid}", shell=True)
+                else:
+                    subprocess.run(f"kill -9 {pid}", shell=True)
                 killed.add(pid)
+
+    if nsys_flush_wait > 0 and killed:
+        print(f"  已发 SIGTERM，等待 {nsys_flush_wait}s 让 nsys flush...", flush=True)
+        import time; time.sleep(nsys_flush_wait)
+        # SIGKILL 兜底，确保进程彻底退出
+        for pid in killed:
+            subprocess.run(f"kill -9 {pid} 2>/dev/null", shell=True)
 
     # 2. 按指定 GPU 上的占用进程 kill（仅 FD 需要，sglang 不传 cuda_devices 即跳过）
     if cuda_devices:
@@ -492,14 +522,16 @@ def main():
             print(f"  启动服务 → {server_log.name}", flush=True)
             proc = start_server(server_cmd, server_log)
             ready = wait_for_server(server_log, ready_timeout, ready_marker)
-            if not ready:
-                print(f"  [SKIP] 服务启动超时，跳过实验 {name}")
+            if ready != "ready":
+                status = "server_error" if ready == "error" else "server_timeout"
+                label  = "启动报错" if ready == "error" else "启动超时"
+                print(f"  [SKIP] 服务{label}，跳过实验 {name}")
                 kill_server(port, proc, extra_ports=extra_ports, cuda_devices=cuda_devices, framework=framework)
                 all_results.append({
                     "framework": framework,
                     "name": name,
                     "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "status": "server_timeout",
+                    "status": status,
                     "server_cmd": server_cmd,
                     "infer_cmd": "",
                     "metrics": {},
@@ -549,7 +581,9 @@ def main():
 
         # 4. Kill 服务
         if server_cmd:
-            kill_server(port, proc, extra_ports=extra_ports, cuda_devices=cuda_devices, framework=framework)
+            nsys_flush_wait = int(exp.get("nsys_flush_wait", 0))
+            kill_server(port, proc, extra_ports=extra_ports, cuda_devices=cuda_devices,
+                        framework=framework, nsys_flush_wait=nsys_flush_wait)
             print(f"  等待 GPU 显存释放 {shutdown_wait}s ...", flush=True)
             time.sleep(shutdown_wait)
 
