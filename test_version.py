@@ -50,7 +50,7 @@ def get_framework_version(framework: str, experiments: list) -> dict:
 
     # ── SGLang ────────────────────────────────────────────────────────────
     elif framework == "sglang":
-        # 方式 1: 从 PYTHONPATH 提取（优先，如 /workspace3/fxy/sglang/python）
+        # 方式 1: 从 PYTHONPATH 提取（优先，如 ../sglang/python）
         repo_path = _extract_repo_path(
             first_server_cmd,
             pattern=r'PYTHONPATH=([^":\s]+sglang/python)',
@@ -161,9 +161,9 @@ def test_fd_version():
         {
             "name": "test_fd",
             "server": (
-                'export PYTHONPATH="/workspace3/fxy/FastDeploy:$PYTHONPATH"\n'
-                "/root/miniconda3/envs/fxy_py12/bin/python -m fastdeploy.entrypoints.openai.api_server \\\n"
-                "    --model /workspace3/fxy/models/GLM-4.5-Air --port 2786"
+                'export PYTHONPATH="../FastDeploy:$PYTHONPATH"\n'
+                "../fxy_py12/bin/python -m fastdeploy.entrypoints.openai.api_server \\\n"
+                "    --model ..//models/GLM-4.5-Air --port 2786"
             ),
         }
     ]
@@ -190,8 +190,8 @@ def test_sglang_version():
         {
             "name": "test_sglang",
             "server": (
-                "export PYTHONPATH=/workspace3/fxy/sglang/python:$PYTHONPATH\n"
-                "/root/miniconda3/envs/fxy_sglang/bin/python -m sglang.launch_server \\\n"
+                "export PYTHONPATH=../sglang/python:$PYTHONPATH\n"
+                "../fxy_sglang/bin/python -m sglang.launch_server \\\n"
                 "    --model-path /workspace2/fanxiangyu/models/GLM-4.5-Air-FP8 --port 3015"
             ),
         }

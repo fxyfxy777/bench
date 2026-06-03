@@ -18,6 +18,7 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -32,12 +33,14 @@ except ImportError:
 
 # ── 指标展示配置 ──────────────────────────────────────────────────────────────
 PRIORITY_COLS = [
-    ("Mean Input Length",               "平均输入长度 (tok)"),
-    ("Mean Output Length",              "平均输出长度 (tok)"),
+    ("Benchmark duration (s)",          "任务耗时 (s)"),
+    ("Mean Input Length",               "输入长度 (tok)"),
+    ("Mean Output Length",              "输出长度 (tok)"),
     ("Request throughput (req/s)",      "QPS (req/s)"),
-    ("Output token throughput (tok/s)", "TPS (tok/s)"),
-    ("Mean Decode",                     "平均解码速度 (tok/s)"),
-    ("Mean TTFT (ms)",                  "首token均值时延 (ms)"),
+    ("Total Token throughput (tok/s)",  "TPS (tok/s)"),
+    ("Output token throughput (tok/s)", "OTPS (tok/s)"),
+    ("Mean Decode",                     "解码速度 (tok/s)"),
+    ("Mean TTFT (ms)",                  "TTFT (ms)"),
     ("Mean E2EL (ms)",                  "整句均值时延 (ms)"),
 ]
 PRIORITY_KEYS  = [k for k, _ in PRIORITY_COLS]
@@ -47,9 +50,8 @@ MEAN_ONLY_GROUPS = {"Input Length", "Output Length", "Cached Tokens"}
 SKIP_GROUPS      = {"S_TTFT", "S_ITL", "S_E2EL"}
 
 EXTRA_ORDER = [
-    "Successful requests", "Benchmark duration (s)",
+    "Successful requests",
     "Total input tokens", "Total generated tokens",
-    "Total Token throughput (tok/s)",
     "Median Decode", "P80 Decode", "P95 Decode", "P99 Decode", "P99.9 Decode",
     "Median TTFT (ms)", "P80 TTFT (ms)", "P95 TTFT (ms)",
     "P99 TTFT (ms)", "P99.9 TTFT (ms)", "P99.95 TTFT (ms)", "P99.99 TTFT (ms)",
@@ -59,21 +61,6 @@ EXTRA_ORDER = [
     "P99 E2EL (ms)", "P99.9 E2EL (ms)", "P99.95 E2EL (ms)", "P99.99 E2EL (ms)",
 ]
 
-# 各框架 ready 标志（可在 YAML global.ready_marker 覆盖）
-READY_MARKERS = {
-    "fd":     "Application startup complete",
-    "sglang": "Application startup complete",
-}
-
-# 服务启动失败的快速退出标志
-ERROR_MARKERS = [
-    "error: unrecognized arguments",
-    "Traceback (most recent call last)",
-    "SystemExit",
-    "RuntimeError",
-    "CUDA out of memory",
-    "Address already in use",
-]
 
 
 def get_framework_version(framework: str, experiments: list) -> dict:
@@ -96,6 +83,14 @@ def get_framework_version(framework: str, experiments: list) -> dict:
             vf = Path(repo_path) / "fastdeploy" / "version.txt"
             if vf.exists():
                 info["extra"] = vf.read_text().strip()
+
+    elif framework == "vllm":
+        python_bin = _extract_path(first_server_cmd, r'(/\S+/bin/python\S*)')
+        if python_bin:
+            ver = _run_quiet([python_bin, "-c",
+                              "import vllm; print(vllm.__version__)"])
+            if ver:
+                info["version"] = ver
 
     elif framework == "sglang":
         repo_path = _extract_path(first_server_cmd, r'PYTHONPATH=([^":\s]+sglang/python)')
@@ -177,25 +172,22 @@ def parse_output(text: str) -> dict:
 
 
 # ── 等待服务就绪 ──────────────────────────────────────────────────────────────
-def wait_for_server(log_file: Path, timeout: int, ready_marker: str) -> str:
-    """返回 'ready' | 'error' | 'timeout'"""
-    print(f"  等待服务就绪（监听 {log_file.name}），超时 {timeout}s ...", flush=True)
+def wait_for_server(timeout: int, port: int) -> str:
+    """轮询 GET /health，返回 'ready' | 'timeout'"""
+    health_url = f"http://127.0.0.1:{port}/health"
+    print(f"  等待服务就绪（探活 {health_url}），超时 {timeout}s ...", flush=True)
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            text = log_file.read_text(errors="replace")
-            if ready_marker in text:
-                print("  ✓ 服务已就绪", flush=True)
-                return "ready"
-            for marker in ERROR_MARKERS:
-                if marker in text:
-                    print(f"\n  ✗ 检测到启动报错: {marker!r}", flush=True)
-                    return "error"
-        except FileNotFoundError:
+            with urllib.request.urlopen(health_url, timeout=5) as resp:
+                if resp.status == 200:
+                    print(f"  ✓ 服务已就绪（/health 返回 200）", flush=True)
+                    return "ready"
+        except Exception:
             pass
         remaining = int(deadline - time.time())
-        print(f"  ... 等待启动，剩余 {remaining}s", end="\r", flush=True)
-        time.sleep(3)
+        print(f"  ... 等待中，剩余 {remaining}s", end="\r", flush=True)
+        time.sleep(10)
     print("\n  ✗ 等待超时", flush=True)
     return "timeout"
 
@@ -214,28 +206,43 @@ def start_server(cmd: str, log_file: Path) -> subprocess.Popen:
 
 # ── Kill 服务 ─────────────────────────────────────────────────────────────────
 def kill_server(port: int, proc: subprocess.Popen = None,
-                extra_ports: list = None, cuda_devices: str = None,
-                framework: str = "fd", nsys_flush_wait: int = 0):
+                extra_ports: list = None, kill_ports: list = None,
+                cuda_devices: str = None, framework: str = "fd",
+                nsys_flush_wait: int = 0, confirm: bool = False):
     """
     nsys_flush_wait > 0 时，先对端口进程发 SIGTERM 并等待 nsys 写文件，
     再执行 SIGKILL 兜底。适用于 server 命令包裹了 nsys profile 的场景。
     """
     all_ports = [port] + [port + offset for offset in (extra_ports or [])]
+    all_ports += [int(p) for p in (kill_ports or [])]
+    all_ports = sorted(set(all_ports))
     print(f"  kill 服务（端口 {all_ports}）...", flush=True)
     killed = set()
 
-    # 1. 按端口 kill
+    # 收集需要 kill 的 PIDs（端口）
+    port_pids = {}
     for p in all_ports:
         r = subprocess.run(f"lsof -ti :{p}", shell=True, capture_output=True, text=True)
-        for pid in r.stdout.strip().splitlines():
-            pid = pid.strip()
-            if pid:
-                if nsys_flush_wait > 0:
-                    # 先 SIGTERM，让 nsys 有机会 flush 写出 .nsys-rep 文件
-                    subprocess.run(f"kill -15 {pid}", shell=True)
-                else:
-                    subprocess.run(f"kill -9 {pid}", shell=True)
-                killed.add(pid)
+        pids = [pid.strip() for pid in r.stdout.strip().splitlines() if pid.strip()]
+        if pids:
+            port_pids[p] = pids
+
+    # 若有进程且需要确认，先问用户
+    if confirm and port_pids:
+        all_found_pids = [pid for pids in port_pids.values() for pid in pids]
+        ans = input(f"  检测到残留进程 {all_found_pids}，是否 kill？[Y/n] ").strip().lower()
+        if ans in ("n", "no"):
+            print("  跳过 kill", flush=True)
+            return
+
+    # 1. 按端口 kill
+    for p, pids in port_pids.items():
+        for pid in pids:
+            if nsys_flush_wait > 0:
+                subprocess.run(f"kill -15 {pid}", shell=True)
+            else:
+                subprocess.run(f"kill -9 {pid}", shell=True)
+            killed.add(pid)
 
     if nsys_flush_wait > 0 and killed:
         print(f"  已发 SIGTERM，等待 {nsys_flush_wait}s 让 nsys flush...", flush=True)
@@ -273,7 +280,6 @@ def kill_server(port: int, proc: subprocess.Popen = None,
     # 4. 清理 FD Unix domain socket 文件（仅 FD 框架需要）
     if framework == "fd":
         sock_candidates = [f"/dev/shm/fd_task_queue_{p}.sock" for p in all_ports]
-        sock_candidates += glob.glob("/dev/shm/fd_*.sock")
         cleaned = set()
         for sock in sock_candidates:
             if os.path.exists(sock):
@@ -287,21 +293,25 @@ def kill_server(port: int, proc: subprocess.Popen = None,
 
 
 # ── 运行压测 ──────────────────────────────────────────────────────────────────
-def run_infer(cmd: str, log_file: Path, run_dir: Path) -> str:
+def run_infer(cmd: str, log_file: Path, run_dir: Path, cwd: Path = None) -> str:
     print(f"  运行压测，输出实时可见 → {log_file.name}", flush=True)
     with open(log_file, "w") as lf:
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
         proc = subprocess.Popen(
             ["bash", "-c", cmd],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            cwd=str(run_dir),
+            cwd=str(cwd or run_dir),
+            env=env,
         )
         lines = []
         for line in proc.stdout:
             sys.stdout.write(line)
             sys.stdout.flush()
             lf.write(line)
+            lf.flush()
             lines.append(line)
         proc.wait()
     return "".join(lines)
@@ -425,6 +435,8 @@ def main():
     parser.add_argument("--kill", action="store_true", help="只 kill 当前服务")
     parser.add_argument("--smoke-test", action="store_true",
                         help="冒烟测试：将所有 --num-prompts 替换为 10")
+    parser.add_argument("--test", action="store_true",
+                        help="测试运行：日志和结果写入 test 目录，而不是 results 目录")
     args = parser.parse_args()
 
     cfg_path = Path(args.config)
@@ -440,27 +452,27 @@ def main():
     framework = g.get("framework") or (
         "fd" if "fd" in cfg_path.stem.lower() else
         "sglang" if "sglang" in cfg_path.stem.lower() else
+        "vllm" if "vllm" in cfg_path.stem.lower() else
         cfg_path.stem
     )
 
     port              = g.get("port", 2786)
     extra_ports       = g.get("extra_ports_offsets", [])
+    kill_ports        = g.get("kill_ports", [])
     ready_timeout     = g.get("server_ready_timeout", 300)
     shutdown_wait     = g.get("shutdown_wait", 20)
     cuda_devices      = g.get("CUDA_VISIBLE_DEVICES", None)
-    results_dir       = Path(cfg_path.parent) / g.get("results_dir", "./results")
-    ready_marker      = g.get("ready_marker", READY_MARKERS.get(framework,
-                              "Application startup complete"))
+    results_dir       = Path(cfg_path.parent) / ("test" if args.test else g.get("results_dir", "./results"))
 
     experiments = cfg.get("experiments", [])
 
     if args.kill:
-        kill_server(port, extra_ports=extra_ports, cuda_devices=cuda_devices, framework=framework)
+        kill_server(port, extra_ports=extra_ports, kill_ports=kill_ports, cuda_devices=cuda_devices, framework=framework)
         return
 
     selection = show_menu(experiments, framework)
     if selection == "kill":
-        kill_server(port, extra_ports=extra_ports, cuda_devices=cuda_devices, framework=framework)
+        kill_server(port, extra_ports=extra_ports, kill_ports=kill_ports, cuda_devices=cuda_devices, framework=framework)
         return
     if not selection:
         print("未选择任何实验，退出。")
@@ -493,6 +505,7 @@ def main():
 
     all_results = []
     excel_path  = run_dir / f"{framework}_bench_{run_id}.xlsx"
+    first_kill_done = False
 
     for idx in selection:
         exp  = experiments[idx]
@@ -517,16 +530,20 @@ def main():
                 server_cmd = f"export FD_LOG_DIR={fd_log_dir}\n" + server_cmd
                 print(f"  FD 日志目录 → {fd_log_dir.name}", flush=True)
             print(f"  预清理残留进程...", flush=True)
-            kill_server(port, extra_ports=extra_ports, cuda_devices=cuda_devices, framework=framework)
+            if not first_kill_done:
+                kill_server(port, extra_ports=extra_ports, kill_ports=kill_ports, cuda_devices=cuda_devices, framework=framework, confirm=True)
+                first_kill_done = True
+            else:
+                kill_server(port, extra_ports=extra_ports, kill_ports=kill_ports, cuda_devices=cuda_devices, framework=framework)
             time.sleep(3)
             print(f"  启动服务 → {server_log.name}", flush=True)
             proc = start_server(server_cmd, server_log)
-            ready = wait_for_server(server_log, ready_timeout, ready_marker)
+            ready = wait_for_server(ready_timeout, port)
             if ready != "ready":
-                status = "server_error" if ready == "error" else "server_timeout"
-                label  = "启动报错" if ready == "error" else "启动超时"
+                status = "server_timeout"
+                label  = "启动超时"
                 print(f"  [SKIP] 服务{label}，跳过实验 {name}")
-                kill_server(port, proc, extra_ports=extra_ports, cuda_devices=cuda_devices, framework=framework)
+                kill_server(port, proc, extra_ports=extra_ports, kill_ports=kill_ports, cuda_devices=cuda_devices, framework=framework)
                 all_results.append({
                     "framework": framework,
                     "name": name,
@@ -549,7 +566,7 @@ def main():
             print("  [smoke-test] --num-prompts 已替换为 10", flush=True)
         output = ""
         if infer_cmd:
-            output = run_infer(infer_cmd, infer_log, run_dir)
+            output = run_infer(infer_cmd, infer_log, run_dir, cwd=cfg_path.parent)
         else:
             print("  infer 为空，跳过压测")
 
@@ -580,12 +597,12 @@ def main():
         print(f"  已实时写入 Excel: {excel_path.name}", flush=True)
 
         # 4. Kill 服务
-        if server_cmd:
-            nsys_flush_wait = int(exp.get("nsys_flush_wait", 0))
-            kill_server(port, proc, extra_ports=extra_ports, cuda_devices=cuda_devices,
-                        framework=framework, nsys_flush_wait=nsys_flush_wait)
-            print(f"  等待 GPU 显存释放 {shutdown_wait}s ...", flush=True)
-            time.sleep(shutdown_wait)
+        # if server_cmd:
+        #     nsys_flush_wait = int(exp.get("nsys_flush_wait", 0))
+        #     kill_server(port, proc, extra_ports=extra_ports, cuda_devices=cuda_devices,
+        #                 framework=framework, nsys_flush_wait=nsys_flush_wait)
+        #     print(f"  等待 GPU 显存释放 {shutdown_wait}s ...", flush=True)
+        #     time.sleep(shutdown_wait)
 
     print(f"\n{'='*60}")
     print(f"  全部完成  [{framework}]  共 {len(all_results)} 个实验")
@@ -599,3 +616,5 @@ if __name__ == "__main__":
 # 后台运行示例:
 # echo "0" | nohup python run_bench.py --config fd_bench.yaml > out_fd.txt 2>&1 &
 # echo "0" | nohup python run_bench.py --config sglang_bench.yaml > out_sglang.txt 2>&1 &
+
+# ps -eo pid,cmd | grep hung.py | grep -v grep | awk '{print $1}' | xargs kill -9
