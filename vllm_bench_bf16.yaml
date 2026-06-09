@@ -1,0 +1,219 @@
+global:
+  port: 5355
+  CUDA_VISIBLE_DEVICES: 4,5,6,7
+  health_url: "http://127.0.0.1:5355/health"
+  server_ready_timeout: 600   # 等待服务启动最长秒数（长输入模型加载慢，设长一点）
+  shutdown_wait: 20           # kill server 后等待 GPU 显存释放的秒数
+  results_dir: "./results"    # 结果目录（相对于本文件所在目录）
+
+experiments:
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # 一、中短数据集  输入:2k  输出:1k
+  # ════════════════════════════════════════════════════════════════════════════
+
+  - name: vllm_中短_MTP_c512
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      MODEL_PATH=/root/paddlejob/share-storage/gpfs/system-public/wangyanpeng04/models/GLM-4.5-Air-Multi-MTP
+      ../bzz2_fxy_vllm/bin/python -m vllm.entrypoints.openai.api_server \
+          --model ${MODEL_PATH} \
+          --served-model-name GLM-4.5-Air \
+          --port 5355 \
+          --max-model-len 65536 \
+          --max-num-seqs 512 \
+          --tensor-parallel-size 4 \
+          --speculative_config '{"method":"mtp","num_speculative_tokens":1}'
+    infer: |
+      ../fxy_py12_fa4/bin/python \
+          ../FastDeploy/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model GLM-4.5-Air \
+          --endpoint /v1/chat/completions \
+          --host 127.0.0.1 --port 5355 \
+          --dataset-name EBChat \
+          --dataset-path ../sglang/debug/0724_ShareGPT_range_1800_3000_num_5000_FD.jsonl \
+          --hyperparameter-path ../sglang/debug/request.yaml \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --num-prompts 5000 \
+          --max-concurrency 512
+
+  - name: vllm_中短_MTP_c64
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      MODEL_PATH=/root/paddlejob/share-storage/gpfs/system-public/wangyanpeng04/models/GLM-4.5-Air-Multi-MTP
+      ../bzz2_fxy_vllm/bin/python -m vllm.entrypoints.openai.api_server \
+          --model ${MODEL_PATH} \
+          --served-model-name GLM-4.5-Air \
+          --port 5355 \
+          --max-model-len 65536 \
+          --max-num-seqs 512 \
+          --tensor-parallel-size 4 \
+          --speculative_config '{"method":"mtp","num_speculative_tokens":1}'
+    infer: |
+      ../fxy_py12_fa4/bin/python \
+          ../FastDeploy/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model GLM-4.5-Air \
+          --endpoint /v1/chat/completions \
+          --host 127.0.0.1 --port 5355 \
+          --dataset-name EBChat \
+          --dataset-path ../sglang/debug/0724_ShareGPT_range_1800_3000_num_5000_FD.jsonl \
+          --hyperparameter-path ../sglang/debug/request.yaml \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --num-prompts 5000 \
+          --max-concurrency 64
+
+  
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # 二、多轮数据集  输入:8k  输出:200
+  # ════════════════════════════════════════════════════════════════════════════
+
+
+  - name: vllm_多轮_MTP_c512
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      MODEL_PATH=/root/paddlejob/share-storage/gpfs/system-public/wangyanpeng04/models/GLM-4.5-Air-Multi-MTP
+      ../fxy_vllm_2/bin/python -m vllm.entrypoints.openai.api_server \
+          --model ${MODEL_PATH} \
+          --served-model-name GLM-4.5-Air \
+          --port 5355 \
+          --max-model-len 131072 \
+          --max-num-seqs 512 \
+          --enable-auto-tool-choice \
+          --tool-call-parser glm45 \
+          --tensor-parallel-size 4 \
+          --speculative_config '{"method":"mtp","num_speculative_tokens":1}'
+    infer: |
+      ../fxy_py12_fa4/bin/python \
+          ../FastDeploy/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model GLM-4.5-Air \
+          --endpoint /v1/chat/completions \
+          --host 127.0.0.1 --port 5355 \
+          --dataset-name EBChat \
+          --dataset-path ../sglang/debug/20260302_browsecomp_plus_processed_num_830_fd.jsonl \
+          --hyperparameter-path ../sglang/debug/request_duolun_vllm.yaml \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --num-prompts 830 \
+          --multi-turn \
+          --max-concurrency 512
+
+  - name: vllm_多轮_MTP_c64
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      MODEL_PATH=/root/paddlejob/share-storage/gpfs/system-public/wangyanpeng04/models/GLM-4.5-Air-Multi-MTP
+      ../fxy_vllm_2/bin/python -m vllm.entrypoints.openai.api_server \
+          --model ${MODEL_PATH} \
+          --served-model-name GLM-4.5-Air \
+          --port 5355 \
+          --max-model-len 131072 \
+          --max-num-seqs 512 \
+          --enable-auto-tool-choice \
+          --tool-call-parser glm45 \
+          --tensor-parallel-size 4 \
+          --speculative_config '{"method":"mtp","num_speculative_tokens":1}'
+    infer: |
+      ../fxy_py12_fa4/bin/python \
+          ../FastDeploy/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model GLM-4.5-Air \
+          --endpoint /v1/chat/completions \
+          --host 127.0.0.1 --port 5355 \
+          --dataset-name EBChat \
+          --dataset-path ../sglang/debug/20260302_browsecomp_plus_processed_num_830_fd.jsonl \
+          --hyperparameter-path ../sglang/debug/request_duolun_vllm.yaml \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --num-prompts 830 \
+          --multi-turn \
+          --max-concurrency 64
+
+  - name: vllm_静态多轮_MTP_c24
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      MODEL_PATH=/root/paddlejob/share-storage/gpfs/system-public/wangyanpeng04/models/GLM-4.5-Air-Multi-MTP
+      ../fxy_vllm_2/bin/python -m vllm.entrypoints.openai.api_server \
+          --model ${MODEL_PATH} \
+          --served-model-name GLM-4.5-Air \
+          --port 5355 \
+          --max-model-len 131072 \
+          --max-num-seqs 512 \
+          --enable-auto-tool-choice \
+          --tool-call-parser glm45 \
+          --tensor-parallel-size 4 \
+          --speculative_config '{"method":"mtp","num_speculative_tokens":1}'
+    infer: |
+      ../fxy_sglang/bin/python ../FastDeploy_RL/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model GLM-4.5-Air \
+          --endpoint /v1/chat/completions \
+          --ip-list 127.0.0.1:5355 \
+          --dataset-name EBChat \
+          --dataset-path ../sglang/debug/swe_data_500_fd.json \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,res_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,reasoning_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --hyperparameter-path ../sglang/debug/request_duolun_vllm.yaml \
+          --num-prompts 100 \
+          --drop-ratio 0 \
+          --pd-metrics \
+          --max-concurrency 24 \
+          --multi-turn
+
+  - name: vllm_长输出_MTP_c512
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      MODEL_PATH=/root/paddlejob/share-storage/gpfs/system-public/wangyanpeng04/models/GLM-4.5-Air-Multi-MTP
+      ../bzz2_fxy_vllm/bin/python -m vllm.entrypoints.openai.api_server \
+          --model ${MODEL_PATH} \
+          --served-model-name GLM-4.5-Air \
+          --port 5355 \
+          --max-model-len 65536 \
+          --max-num-seqs 512 \
+          --tensor-parallel-size 4 \
+          --speculative_config '{"method":"mtp","num_speculative_tokens":1}'
+    infer: |
+      ../fxy_py12_fa4/bin/python \
+          ../FastDeploy/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model GLM-4.5-Air \
+          --endpoint /v1/chat/completions \
+          --host 127.0.0.1 --port 5355 \
+          --dataset-name EBChat \
+          --dataset-path ../sglang/debug/eb5_ppo_data_v1126_reasoning_merge_data_v1_for_release_gbs384_text_shuffled_250_with_output_tokens.jsonl \
+          --hyperparameter-path ../sglang/debug/request_changshuchu.yaml \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --num-prompts 250 \
+          --max-concurrency 512
+
+  - name: vllm_长输出_MTP_c64
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      MODEL_PATH=/root/paddlejob/share-storage/gpfs/system-public/wangyanpeng04/models/GLM-4.5-Air-Multi-MTP
+      ../bzz2_fxy_vllm/bin/python -m vllm.entrypoints.openai.api_server \
+          --model ${MODEL_PATH} \
+          --served-model-name GLM-4.5-Air \
+          --port 5355 \
+          --max-model-len 65536 \
+          --max-num-seqs 512 \
+          --tensor-parallel-size 4 \
+          --speculative_config '{"method":"mtp","num_speculative_tokens":1}'
+    infer: |
+      ../fxy_py12_fa4/bin/python \
+          ../FastDeploy/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model GLM-4.5-Air \
+          --endpoint /v1/chat/completions \
+          --host 127.0.0.1 --port 5355 \
+          --dataset-name EBChat \
+          --dataset-path ../sglang/debug/eb5_ppo_data_v1126_reasoning_merge_data_v1_for_release_gbs384_text_shuffled_250_with_output_tokens.jsonl \
+          --hyperparameter-path ../sglang/debug/request_changshuchu.yaml \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --num-prompts 250 \
+          --max-concurrency 64

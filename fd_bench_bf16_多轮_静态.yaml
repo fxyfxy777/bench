@@ -1,0 +1,556 @@
+global:
+  port: 2755
+  CUDA_VISIBLE_DEVICES: 4,5,6,7
+  extra_ports_offsets: [100, 200, 300]  # metrics(+100), engine-worker-queue(+200), cache-queue(+300)
+  kill_ports: [2755, 2756, 2757, 2758, 2855, 2856, 2857, 2858, 2955, 2956, 2957, 2958, 3055, 3056, 3057, 3058]
+  health_url: "http://127.0.0.1:2755/health"
+  server_ready_timeout: 1000   # 等待服务启动最长秒数
+  shutdown_wait: 20           # kill server 后等待 GPU 显存释放的秒数
+  results_dir: "./results"    # 结果目录（相对于本文件所在目录）
+
+experiments:
+  - name: fd_多轮_MTP_c64_DP4EP4TP1
+    ready_count: 8
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export DG_CACHE_DIR=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/.deep_gemm_cache
+      export PYTHONPATH="/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export FD_ENABLE_MULTI_API_SERVER=1
+      export MAX_PREFILL_NUM=128
+      model_path=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/models/GLM-4.5-Air
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/xuanyuan_py12_fa4//bin/python -m fastdeploy.entrypoints.openai.multi_api_server \
+          --ports "2755,2756,2757,2758" \
+          --num-servers 4 \
+          --metrics-ports "2855,2856,2857,2858" \
+          --args --model $model_path \
+          --engine-worker-queue-port "2955,2956,2957,2958" \
+          --cache-queue-port "3055,3056,3057,3058" \
+          --max-model-len 131072 \
+          --enable-overlap-schedule \
+          --tensor-parallel-size 1 \
+          --data-parallel-size 4 \
+          --enable-expert-parallel \
+          --max-num-seqs 512 \
+          --max-long-partial-prefills 128 \
+          --max-num-partial-prefills 128 \
+          --max-num-batched-tokens 32768 \
+          --speculative-config '{"method": "mtp", "num_speculative_tokens": 1, "num_model_steps": 1, "model": "'$model_path'"}' \
+          --graph-optimization-config '{"use_cudagraph": true, "draft_model_use_cudagraph": true}' \
+          --workers 4 \
+          --max-concurrency 1024 \
+          --enable-logprob
+    infer: |
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/fxy_sglang/bin/python /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy_RL/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model EB45T \
+          --endpoint /v1/chat/completions \
+          --ip-list 127.0.0.1:2755,127.0.0.1:2756,127.0.0.1:2757,127.0.0.1:2758 \
+          --dataset-name EBChat \
+          --dataset-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/swe_data_500_fd.json \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,res_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,reasoning_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --hyperparameter-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/request_duolun_复现最优静态数据集性能.yaml \
+          --num-prompts 100 \
+          --drop-ratio 0 \
+          --pd-metrics \
+          --max-concurrency 24 \
+          --multi-turn
+
+  - name: fd_多轮_MTP_c64_DP1EP4TP4
+    ready_count: 1
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export DG_CACHE_DIR=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/.deep_gemm_cache
+      export PYTHONPATH="/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export MAX_PREFILL_NUM=128
+      model_path=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/models/GLM-4.5-Air
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/xuanyuan_py12_fa4//bin/python -m fastdeploy.entrypoints.openai.api_server \
+          --model $model_path \
+          --port 2755 \
+          --max-model-len 131072 \
+          --enable-overlap-schedule \
+          --tensor-parallel-size 4 \
+          --data-parallel-size 1 \
+          --enable-expert-parallel \
+          --max-num-seqs 512 \
+          --max-long-partial-prefills 128 \
+          --max-num-partial-prefills 128 \
+          --max-num-batched-tokens 32768 \
+          --speculative-config '{"method": "mtp", "num_speculative_tokens": 1, "num_model_steps": 1, "model": "'$model_path'"}' \
+          --graph-optimization-config '{"use_cudagraph": true, "draft_model_use_cudagraph": true}' \
+          --enable-flashinfer-allreduce-fusion \
+          --enable-logprob
+    infer: |
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/fxy_sglang/bin/python /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy_RL/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model EB45T \
+          --endpoint /v1/chat/completions \
+          --ip-list 127.0.0.1:2755 \
+          --dataset-name EBChat \
+          --dataset-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/swe_data_500_fd.json \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,res_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,reasoning_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --hyperparameter-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/request_duolun.yaml \
+          --num-prompts 100 \
+          --drop-ratio 0 \
+          --pd-metrics \
+          --max-concurrency 24 \
+          --multi-turn
+
+  - name: fd_多轮_MTP_c64_TP4
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export DG_CACHE_DIR=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/.deep_gemm_cache
+      export PYTHONPATH="/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export MAX_PREFILL_NUM=128
+      model_path=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/models/GLM-4.5-Air
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/xuanyuan_py12_fa4//bin/python -m fastdeploy.entrypoints.openai.api_server \
+          --model $model_path \
+          --port 2755 \
+          --max-model-len 131072 \
+          --enable-overlap-schedule \
+          --tensor-parallel-size 4 \
+          --max-num-seqs 512 \
+          --max-long-partial-prefills 128 \
+          --max-num-partial-prefills 128 \
+          --max-num-batched-tokens 32768 \
+          --speculative-config '{"method": "mtp", "num_speculative_tokens": 1, "num_model_steps": 1, "model": "'$model_path'"}' \
+          --graph-optimization-config '{"use_cudagraph": true, "draft_model_use_cudagraph": true}' \
+          --enable-flashinfer-allreduce-fusion
+    infer: |
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/fxy_sglang/bin/python /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy_RL/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model EB45T \
+          --endpoint /v1/chat/completions \
+          --ip-list 127.0.0.1:2755 \
+          --dataset-name EBChat \
+          --dataset-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/swe_data_500_fd.json \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,res_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,reasoning_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --hyperparameter-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/request_duolun_复现最优静态数据集性能.yaml \
+          --num-prompts 30 \
+          --drop-ratio 0 \
+          --pd-metrics \
+          --max-concurrency 24 \
+          --multi-turn
+
+  - name: fd_多轮_c24_DP4EP4TP1
+    ready_count: 8
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export DG_CACHE_DIR=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/.deep_gemm_cache
+      export PYTHONPATH="/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export FD_ENABLE_MULTI_API_SERVER=1
+      export MAX_PREFILL_NUM=128
+      model_path=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/models/GLM-4.5-Air
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/xuanyuan_py12_fa4//bin/python -m fastdeploy.entrypoints.openai.multi_api_server \
+          --ports "2755,2756,2757,2758" \
+          --num-servers 4 \
+          --metrics-ports "2855,2856,2857,2858" \
+          --args --model $model_path \
+          --engine-worker-queue-port "2955,2956,2957,2958" \
+          --cache-queue-port "3055,3056,3057,3058" \
+          --max-model-len 131072 \
+          --enable-overlap-schedule \
+          --tensor-parallel-size 1 \
+          --data-parallel-size 4 \
+          --enable-expert-parallel \
+          --max-num-seqs 512 \
+          --max-long-partial-prefills 128 \
+          --max-num-partial-prefills 128 \
+          --max-num-batched-tokens 32768 \
+          --graph-optimization-config '{"use_cudagraph": true, "draft_model_use_cudagraph": true}' \
+          --workers 4 \
+          --max-concurrency 1024 \
+          --enable-logprob
+    infer: |
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/fxy_sglang/bin/python /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy_RL/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model EB45T \
+          --endpoint /v1/chat/completions \
+          --ip-list 127.0.0.1:2755,127.0.0.1:2756,127.0.0.1:2757,127.0.0.1:2758 \
+          --dataset-name EBChat \
+          --dataset-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/swe_data_500_fd.json \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,res_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,reasoning_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --hyperparameter-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/request_duolun_复现最优静态数据集性能.yaml \
+          --num-prompts 100 \
+          --drop-ratio 0 \
+          --pd-metrics \
+          --max-concurrency 24 \
+          --multi-turn
+
+  - name: fd_多轮_c24_DP1EP4TP4
+    ready_count: 1
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export DG_CACHE_DIR=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/.deep_gemm_cache
+      export PYTHONPATH="/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export MAX_PREFILL_NUM=128
+      model_path=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/models/GLM-4.5-Air
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/xuanyuan_py12_fa4//bin/python -m fastdeploy.entrypoints.openai.api_server \
+          --model $model_path \
+          --port 2755 \
+          --max-model-len 131072 \
+          --enable-overlap-schedule \
+          --tensor-parallel-size 4 \
+          --data-parallel-size 1 \
+          --enable-expert-parallel \
+          --max-num-seqs 64 \
+          --max-long-partial-prefills 128 \
+          --max-num-partial-prefills 128 \
+          --max-num-batched-tokens 32768 \
+          --graph-optimization-config '{"use_cudagraph": true, "draft_model_use_cudagraph": true}' \
+          --enable-logprob
+    infer: |
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/fxy_sglang/bin/python /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy_RL/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model EB45T \
+          --endpoint /v1/chat/completions \
+          --ip-list 127.0.0.1:2755 \
+          --dataset-name EBChat \
+          --dataset-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/swe_data_500_fd.json \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,res_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,reasoning_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --hyperparameter-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/request_duolun.yaml \
+          --num-prompts 100 \
+          --drop-ratio 0 \
+          --pd-metrics \
+          --max-concurrency 24 \
+          --multi-turn
+
+  - name: fd_多轮_c24_TP4
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export DG_CACHE_DIR=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/.deep_gemm_cache
+      export PYTHONPATH="/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export MAX_PREFILL_NUM=128
+      model_path=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/models/GLM-4.5-Air
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/xuanyuan_py12_fa4//bin/python -m fastdeploy.entrypoints.openai.api_server \
+          --model $model_path \
+          --port 2755 \
+          --max-model-len 131072 \
+          --enable-overlap-schedule \
+          --tensor-parallel-size 4 \
+          --max-num-seqs 512 \
+          --max-long-partial-prefills 128 \
+          --max-num-partial-prefills 128 \
+          --max-num-batched-tokens 32768 \
+          --graph-optimization-config '{"use_cudagraph": true, "draft_model_use_cudagraph": true}' \
+          --workers 4 \
+          --max-concurrency 1024 \
+          --enable-logprob
+    infer: |
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/fxy_sglang/bin/python /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy_RL/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model EB45T \
+          --endpoint /v1/chat/completions \
+          --ip-list 127.0.0.1:2755 \
+          --dataset-name EBChat \
+          --dataset-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/swe_data_500_fd.json \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,res_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,reasoning_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --hyperparameter-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/request_duolun_复现最优静态数据集性能.yaml \
+          --num-prompts 30 \
+          --drop-ratio 0 \
+          --pd-metrics \
+          --max-concurrency 24 \
+          --multi-turn
+
+  - name: fd_多轮_MTP_c64_worker_1_firstrun
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export FD_ENABLE_STEP_TIMING=1 # 计时的标志
+      export DG_CACHE_DIR=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/.deep_gemm_cache
+      export PYTHONPATH="/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export MAX_PREFILL_NUM=128
+      model_path=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/models/GLM-4.5-Air
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/xuanyuan_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.api_server \
+          --model $model_path \
+          --port 2755 \
+          --max-model-len 131072 \
+          --enable-overlap-schedule \
+          --tensor-parallel-size 4 \
+          --max-num-seqs 512 \
+          --max-long-partial-prefills 128 \
+          --max-num-partial-prefills 128 \
+          --max-num-batched-tokens 32768 \
+          --speculative-config '{"method": "mtp", "num_speculative_tokens": 1, "num_model_steps": 1, "model": "'$model_path'"}' \
+          --graph-optimization-config '{"use_cudagraph": true, "draft_model_use_cudagraph": true}' \
+          --enable-flashinfer-allreduce-fusion \
+          --workers 1 \
+          --enable-logprob
+    infer: |
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/fxy_sglang/bin/python /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy_RL/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model EB45T \
+          --endpoint /v1/chat/completions \
+          --ip-list 127.0.0.1:2755 \
+          --dataset-name EBChat \
+          --dataset-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/swe_data_500_fd.json \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,res_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,reasoning_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --hyperparameter-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/request_duolun_复现最优静态数据集性能.yaml \
+          --num-prompts 100 \
+          --drop-ratio 0 \
+          --pd-metrics \
+          --max-concurrency 24 \
+          --multi-turn
+
+  - name: fd_多轮_MTP_c64
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export DG_CACHE_DIR=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/.deep_gemm_cache
+      export PYTHONPATH="/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export MAX_PREFILL_NUM=128
+      model_path=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/models/GLM-4.5-Air
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/xuanyuan_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.api_server \
+          --model $model_path \
+          --port 2755 \
+          --max-model-len 131072 \
+          --enable-overlap-schedule \
+          --tensor-parallel-size 4 \
+          --max-num-seqs 512 \
+          --max-long-partial-prefills 128 \
+          --max-num-partial-prefills 128 \
+          --max-num-batched-tokens 32768 \
+          --speculative-config '{"method": "mtp", "num_speculative_tokens": 1, "num_model_steps": 1, "model": "'$model_path'"}' \
+          --graph-optimization-config '{"use_cudagraph": true, "draft_model_use_cudagraph": true}' \
+          --enable-flashinfer-allreduce-fusion \
+          --workers 4 \
+          --max-concurrency 1024 \
+          --enable-logprob
+    infer: |
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/fxy_sglang/bin/python /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy_RL/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model EB45T \
+          --endpoint /v1/chat/completions \
+          --ip-list 127.0.0.1:2755 \
+          --dataset-name EBChat \
+          --dataset-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/swe_data_500_fd.json \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,res_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,reasoning_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --hyperparameter-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/request_duolun_复现最优静态数据集性能.yaml \
+          --num-prompts 100 \
+          --drop-ratio 0 \
+          --pd-metrics \
+          --max-concurrency 24 \
+          --multi-turn
+
+  - name: fd_多轮_MTP_c64_worker_1
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export FD_ENABLE_STEP_TIMING=1 # 计时的标志
+      export DG_CACHE_DIR=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/.deep_gemm_cache
+      export PYTHONPATH="/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export MAX_PREFILL_NUM=128
+      model_path=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/models/GLM-4.5-Air
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/xuanyuan_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.api_server \
+          --model $model_path \
+          --port 2755 \
+          --max-model-len 131072 \
+          --enable-overlap-schedule \
+          --tensor-parallel-size 4 \
+          --max-num-seqs 512 \
+          --max-long-partial-prefills 128 \
+          --max-num-partial-prefills 128 \
+          --max-num-batched-tokens 32768 \
+          --speculative-config '{"method": "mtp", "num_speculative_tokens": 1, "num_model_steps": 1, "model": "'$model_path'"}' \
+          --graph-optimization-config '{"use_cudagraph": true, "draft_model_use_cudagraph": true}' \
+          --enable-flashinfer-allreduce-fusion \
+          --workers 1 \
+          --enable-logprob
+    infer: |
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/fxy_sglang/bin/python /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy_RL/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model EB45T \
+          --endpoint /v1/chat/completions \
+          --ip-list 127.0.0.1:2755 \
+          --dataset-name EBChat \
+          --dataset-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/swe_data_500_fd.json \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,res_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,reasoning_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --hyperparameter-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/request_duolun_复现最优静态数据集性能.yaml \
+          --num-prompts 100 \
+          --drop-ratio 0 \
+          --pd-metrics \
+          --max-concurrency 24 \
+          --multi-turn
+
+  - name: fd_多轮_MTP_c512
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export DG_CACHE_DIR=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/.deep_gemm_cache
+      export PYTHONPATH="/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export MAX_PREFILL_NUM=128
+      model_path=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/models/GLM-4.5-Air
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/xuanyuan_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.api_server \
+          --model $model_path \
+          --port 2755 \
+          --max-model-len 131072 \
+          --enable-overlap-schedule \
+          --tensor-parallel-size 4 \
+          --max-num-seqs 512 \
+          --max-long-partial-prefills 128 \
+          --max-num-partial-prefills 128 \
+          --max-num-batched-tokens 32768 \
+          --speculative-config '{"method": "mtp", "num_speculative_tokens": 1, "num_model_steps": 1, "model": "'$model_path'"}' \
+          --graph-optimization-config '{"use_cudagraph": true, "draft_model_use_cudagraph": true}' \
+          --enable-flashinfer-allreduce-fusion \
+          --workers 4 \
+          --max-concurrency 1024 \
+          --enable-logprob
+    infer: |
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/fxy_sglang/bin/python /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy_RL/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model EB45T \
+          --endpoint /v1/chat/completions \
+          --ip-list 127.0.0.1:2755 \
+          --dataset-name EBChat \
+          --dataset-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/swe_data_500_fd.json \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,res_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,reasoning_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --hyperparameter-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/request_duolun_复现最优静态数据集性能.yaml \
+          --num-prompts 100 \
+          --drop-ratio 0 \
+          --pd-metrics \
+          --max-concurrency 24 \
+          --multi-turn
+
+  - name: fd_多轮_MTP_c512_worker_1
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export DG_CACHE_DIR=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/.deep_gemm_cache
+      export PYTHONPATH="/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export MAX_PREFILL_NUM=128
+      model_path=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/models/GLM-4.5-Air
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/xuanyuan_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.api_server \
+          --model $model_path \
+          --port 2755 \
+          --max-model-len 131072 \
+          --enable-overlap-schedule \
+          --tensor-parallel-size 4 \
+          --max-num-seqs 512 \
+          --max-long-partial-prefills 128 \
+          --max-num-partial-prefills 128 \
+          --max-num-batched-tokens 32768 \
+          --speculative-config '{"method": "mtp", "num_speculative_tokens": 1, "num_model_steps": 1, "model": "'$model_path'"}' \
+          --graph-optimization-config '{"use_cudagraph": true, "draft_model_use_cudagraph": true}' \
+          --enable-flashinfer-allreduce-fusion \
+          --workers 1 \
+          --enable-logprob
+    infer: |
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/fxy_sglang/bin/python /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy_RL/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model EB45T \
+          --endpoint /v1/chat/completions \
+          --ip-list 127.0.0.1:2755 \
+          --dataset-name EBChat \
+          --dataset-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/swe_data_500_fd.json \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,res_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,reasoning_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --hyperparameter-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/request_duolun_复现最优静态数据集性能.yaml \
+          --num-prompts 100 \
+          --drop-ratio 0 \
+          --pd-metrics \
+          --max-concurrency 24 \
+          --multi-turn
+
+  - name: fd_多轮_默认_c512
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export DG_CACHE_DIR=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/.deep_gemm_cache
+      export PYTHONPATH="/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      model_path=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/models/GLM-4.5-Air
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/xuanyuan_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.api_server \
+          --model $model_path \
+          --port 2755 \
+          --max-model-len 131072 \
+          --enable-overlap-schedule \
+          --tensor-parallel-size 4 \
+          --max-num-seqs 512 \
+          --max-long-partial-prefills 128 \
+          --max-num-partial-prefills 128 \
+          --max-num-batched-tokens 32768 \
+          --enable-flashinfer-allreduce-fusion \
+          --workers 4 \
+          --max-concurrency 1024 \
+          --enable-logprob
+    infer: |
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/fxy_sglang/bin/python /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy_RL/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model EB45T \
+          --endpoint /v1/chat/completions \
+          --ip-list 127.0.0.1:2755 \
+          --dataset-name EBChat \
+          --dataset-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/swe_data_500_fd.json \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,res_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,reasoning_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --hyperparameter-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/request_duolun_复现最优静态数据集性能.yaml \
+          --num-prompts 100 \
+          --drop-ratio 0 \
+          --pd-metrics \
+          --max-concurrency 24 \
+          --multi-turn
+
+  - name: fd_多轮_默认_c512_worker_1
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export DG_CACHE_DIR=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/.deep_gemm_cache
+      export PYTHONPATH="/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy:$PYTHONPATH"
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      model_path=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/models/GLM-4.5-Air
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/xuanyuan_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.api_server \
+          --model $model_path \
+          --port 2755 \
+          --max-model-len 131072 \
+          --enable-overlap-schedule \
+          --tensor-parallel-size 4 \
+          --max-num-seqs 512 \
+          --max-long-partial-prefills 128 \
+          --max-num-partial-prefills 128 \
+          --max-num-batched-tokens 32768 \
+          --enable-flashinfer-allreduce-fusion \
+          --workers 1 \
+          --enable-logprob
+    infer: |
+      /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/fxy_sglang/bin/python /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy_RL/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model EB45T \
+          --endpoint /v1/chat/completions \
+          --ip-list 127.0.0.1:2755 \
+          --dataset-name EBChat \
+          --dataset-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/swe_data_500_fd.json \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,res_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,reasoning_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --hyperparameter-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/request_duolun_复现最优静态数据集性能.yaml \
+          --num-prompts 100 \
+          --drop-ratio 0 \
+          --pd-metrics \
+          --max-concurrency 24 \
+          --multi-turn

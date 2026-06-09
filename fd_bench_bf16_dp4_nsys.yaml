@@ -1,0 +1,274 @@
+global:
+  port: 4871
+  CUDA_VISIBLE_DEVICES: 4,5,6,7
+  extra_ports_offsets: [1, 2, 3]  # DP4 端口: 4871,4872,4873,4874
+  health_url: "http://127.0.0.1:4871/health"
+  server_ready_timeout: 1000
+  shutdown_wait: 20
+  results_dir: "./results"
+  ready_count: 4  # DP4 需要等 4 个实例都启动完成
+
+experiments:
+
+  - name: fd_dp4_rl_c256_FLASH_ATTN
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export DG_CACHE_DIR=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/.deep_gemm_cache
+      export PYTHONPATH="../FastDeploy:$PYTHONPATH"
+      export LD_LIBRARY_PATH=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/fxy_py12_fa4/lib/python3.12/site-packages/nvidia/nvshmem/lib:$LD_LIBRARY_PATH
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export FD_ENABLE_MULTI_API_SERVER=1
+      export NVSHMEM_DISABLE_NCCL=1
+      export NVSHMEM_BOOTSTRAP=UID
+      export NVSHMEM_BOOTSTRAP_UID_SOCK_FAMILY=AF_INET
+      export FD_USE_PFCC_DEEP_EP=1
+      export FD_USE_DEEP_GEMM=1
+      export FD_ATTENTION_BACKEND=FLASH_ATTN
+      export FD_ENABLE_RL=1
+      export FD_USE_PHI_MOE_TOPK=1
+      export FD_USE_PHI_MOE_PERMUTE=1
+      export FD_SiluAndMul_USE_PHI_SWIGLU=1
+      export FD_MOE_PROB_IN_ADVANCE=1
+      export FD_USE_PHI_RMSNORM=1
+      export ENABLE_V1_KVCACHE_SCHEDULER=1
+      export FD_ENC_DEC_BLOCK_NUM=3
+      model_path=/root/paddlejob/share-storage/gpfs/system-public/wangyanpeng04/models/GLM-4.5-Air-Multi-MTP
+      export PROFILE_ITERS=20
+      nsys profile \
+      -c cudaProfilerApi \
+          -t cuda,nvtx \
+          --cuda-graph-trace=node \
+          -f true \
+          -o fd_${FD_ATTENTION_BACKEND}_dp4ep4tp1 \
+      ../fxy_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.multi_api_server \
+          --ports "4871,4872,4873,4874" \
+          --num-servers 4 \
+          --metrics-ports "6231,6232,6233,6234" \
+          --args --model ${model_path} \
+          --engine-worker-queue-port "7831,7832,7833,7834" \
+          --cache-queue-port "9121,9122,9123,9124" \
+          --load-choices default_v1 \
+          --max-num-seqs 256 \
+          --chat-template custom_chat_template.jinja \
+          --max-model-len 22528 \
+          --enable-prefix-caching \
+          --max-num-batched-tokens 8192 \
+          --disable-custom-all-reduce \
+          --graph-optimization-config '{"use_cudagraph": true}' \
+          --tensor-parallel-size 1 \
+          --data-parallel-size 4 \
+          --enable-expert-parallel \
+          --enable-logprob \
+          --prealloc-dec-block-slot-num-threshold 36
+    infer: |
+      ../fxy_py12_fa4/bin/python \
+          ../FastDeploy/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model /root/paddlejob/share-storage/gpfs/system-public/wangyanpeng04/models/GLM-4.5-Air-Multi-MTP \
+          --endpoint /v1/chat/completions \
+          --ip-list 127.0.0.1:4871,127.0.0.1:4872,127.0.0.1:4873,127.0.0.1:4874 \
+          --dataset-name EBChat \
+          --dataset-path /root/paddlejob/share-storage/gpfs/system-public/xieyunyao/FastDeploy/benchmarks/dapo_math_17k_paddlerl_40k_top32_dup_256_for_fastdeploy_2_EBChatFormat.jsonl \
+          --hyperparameter-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/xyy_RL.yaml \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --num-prompts 256 \
+          --max-concurrency 256
+
+  - name: fd_dp4_rl_c256_flash_mask_attn
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export DG_CACHE_DIR=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/.deep_gemm_cache
+      export PYTHONPATH="../FastDeploy:$PYTHONPATH"
+      export LD_LIBRARY_PATH=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/fxy_py12_fa4/lib/python3.12/site-packages/nvidia/nvshmem/lib:$LD_LIBRARY_PATH
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export FD_ENABLE_MULTI_API_SERVER=1
+      export NVSHMEM_DISABLE_NCCL=1
+      export NVSHMEM_BOOTSTRAP=UID
+      export NVSHMEM_BOOTSTRAP_UID_SOCK_FAMILY=AF_INET
+      export FD_USE_PFCC_DEEP_EP=1
+      export FD_USE_DEEP_GEMM=1
+      export FD_ATTENTION_BACKEND=FLASH_MASK_ATTN
+      export FD_ENABLE_RL=1
+      export FD_USE_PHI_MOE_TOPK=1
+      export FD_USE_PHI_MOE_PERMUTE=1
+      export FD_SiluAndMul_USE_PHI_SWIGLU=1
+      export FD_MOE_PROB_IN_ADVANCE=1
+      export FD_USE_PHI_RMSNORM=1
+      export ENABLE_V1_KVCACHE_SCHEDULER=1
+      export FD_ENC_DEC_BLOCK_NUM=3
+      model_path=/root/paddlejob/share-storage/gpfs/system-public/wangyanpeng04/models/GLM-4.5-Air-Multi-MTP
+      export PROFILE_ITERS=20
+      nsys profile \
+      -c cudaProfilerApi \
+          -t cuda,nvtx \
+          --cuda-graph-trace=node \
+          -f true \
+          -o fd_${FD_ATTENTION_BACKEND}_dp4ep4tp1 \
+      ../fxy_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.multi_api_server \
+          --ports "4871,4872,4873,4874" \
+          --num-servers 4 \
+          --metrics-ports "6231,6232,6233,6234" \
+          --args --model ${model_path} \
+          --engine-worker-queue-port "7831,7832,7833,7834" \
+          --cache-queue-port "9121,9122,9123,9124" \
+          --load-choices default_v1 \
+          --max-num-seqs 256 \
+          --chat-template custom_chat_template.jinja \
+          --max-model-len 22528 \
+          --enable-prefix-caching \
+          --max-num-batched-tokens 8192 \
+          --disable-custom-all-reduce \
+          --graph-optimization-config '{"use_cudagraph": true}' \
+          --tensor-parallel-size 1 \
+          --data-parallel-size 4 \
+          --enable-expert-parallel \
+          --enable-logprob \
+          --prealloc-dec-block-slot-num-threshold 36
+    infer: |
+      ../fxy_py12_fa4/bin/python \
+          ../FastDeploy/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model /root/paddlejob/share-storage/gpfs/system-public/wangyanpeng04/models/GLM-4.5-Air-Multi-MTP \
+          --endpoint /v1/chat/completions \
+          --ip-list 127.0.0.1:4871,127.0.0.1:4872,127.0.0.1:4873,127.0.0.1:4874 \
+          --dataset-name EBChat \
+          --dataset-path /root/paddlejob/share-storage/gpfs/system-public/xieyunyao/FastDeploy/benchmarks/dapo_math_17k_paddlerl_40k_top32_dup_256_for_fastdeploy_2_EBChatFormat.jsonl \
+          --hyperparameter-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/xyy_RL.yaml \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --num-prompts 256 \
+          --max-concurrency 256
+
+  - name: fd_dp4_rl_c256_APPEND_ATTN
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export DG_CACHE_DIR=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/.deep_gemm_cache
+      export PYTHONPATH="../FastDeploy:$PYTHONPATH"
+      export LD_LIBRARY_PATH=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/fxy_py12_fa4/lib/python3.12/site-packages/nvidia/nvshmem/lib:$LD_LIBRARY_PATH
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export FD_ENABLE_MULTI_API_SERVER=1
+      export NVSHMEM_DISABLE_NCCL=1
+      export NVSHMEM_BOOTSTRAP=UID
+      export NVSHMEM_BOOTSTRAP_UID_SOCK_FAMILY=AF_INET
+      export FD_USE_PFCC_DEEP_EP=1
+      export FD_USE_DEEP_GEMM=1
+      export FD_ATTENTION_BACKEND=APPEND_ATTN
+      export FD_ENABLE_RL=1
+      export FD_USE_PHI_MOE_TOPK=1
+      export FD_USE_PHI_MOE_PERMUTE=1
+      export FD_SiluAndMul_USE_PHI_SWIGLU=1
+      export FD_MOE_PROB_IN_ADVANCE=1
+      export FD_USE_PHI_RMSNORM=1
+      export ENABLE_V1_KVCACHE_SCHEDULER=1
+      export FD_ENC_DEC_BLOCK_NUM=3
+      model_path=/root/paddlejob/share-storage/gpfs/system-public/wangyanpeng04/models/GLM-4.5-Air-Multi-MTP
+      export PROFILE_ITERS=20
+      nsys profile \
+      -c cudaProfilerApi \
+          -t cuda,nvtx \
+          --cuda-graph-trace=node \
+          -f true \
+          -o fd_${FD_ATTENTION_BACKEND}_dp4ep4tp1 \
+      ../fxy_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.multi_api_server \
+          --ports "4871,4872,4873,4874" \
+          --num-servers 4 \
+          --metrics-ports "6231,6232,6233,6234" \
+          --args --model ${model_path} \
+          --engine-worker-queue-port "7831,7832,7833,7834" \
+          --cache-queue-port "9121,9122,9123,9124" \
+          --load-choices default_v1 \
+          --max-num-seqs 256 \
+          --chat-template custom_chat_template.jinja \
+          --max-model-len 22528 \
+          --enable-prefix-caching \
+          --max-num-batched-tokens 8192 \
+          --disable-custom-all-reduce \
+          --graph-optimization-config '{"use_cudagraph": true}' \
+          --tensor-parallel-size 1 \
+          --data-parallel-size 4 \
+          --enable-expert-parallel \
+          --enable-logprob \
+          --prealloc-dec-block-slot-num-threshold 36
+    infer: |
+      ../fxy_py12_fa4/bin/python \
+          ../FastDeploy/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model /root/paddlejob/share-storage/gpfs/system-public/wangyanpeng04/models/GLM-4.5-Air-Multi-MTP \
+          --endpoint /v1/chat/completions \
+          --ip-list 127.0.0.1:4871,127.0.0.1:4872,127.0.0.1:4873,127.0.0.1:4874 \
+          --dataset-name EBChat \
+          --dataset-path /root/paddlejob/share-storage/gpfs/system-public/xieyunyao/FastDeploy/benchmarks/dapo_math_17k_paddlerl_40k_top32_dup_256_for_fastdeploy_2_EBChatFormat.jsonl \
+          --hyperparameter-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/xyy_RL.yaml \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --num-prompts 256 \
+          --max-concurrency 256
+  - name: fd_dp4_rl_c256_trtllm_ATTN
+    server: |
+      export CUDA_VISIBLE_DEVICES=4,5,6,7
+      export DG_CACHE_DIR=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/.deep_gemm_cache
+      export PYTHONPATH="../FastDeploy:$PYTHONPATH"
+      export LD_LIBRARY_PATH=/root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/fxy_py12_fa4/lib/python3.12/site-packages/nvidia/nvshmem/lib:$LD_LIBRARY_PATH
+      export FD_SAMPLING_CLASS=rejection
+      export FD_ENGINE_TASK_QUEUE_WITH_SHM=1
+      export FD_ENABLE_MULTI_API_SERVER=1
+      export NVSHMEM_DISABLE_NCCL=1
+      export NVSHMEM_BOOTSTRAP=UID
+      export NVSHMEM_BOOTSTRAP_UID_SOCK_FAMILY=AF_INET
+      export FD_USE_PFCC_DEEP_EP=1
+      export FD_USE_DEEP_GEMM=1
+      export FD_ATTENTION_BACKEND=TRTLLM_ATTN
+      export FD_ENABLE_RL=1
+      export FD_USE_PHI_MOE_TOPK=1
+      export FD_USE_PHI_MOE_PERMUTE=1
+      export FD_SiluAndMul_USE_PHI_SWIGLU=1
+      export FD_MOE_PROB_IN_ADVANCE=1
+      export FD_USE_PHI_RMSNORM=1
+      export ENABLE_V1_KVCACHE_SCHEDULER=1
+      export FD_ENC_DEC_BLOCK_NUM=3
+      model_path=/root/paddlejob/share-storage/gpfs/system-public/wangyanpeng04/models/GLM-4.5-Air-Multi-MTP
+      export PROFILE_ITERS=20
+      nsys profile \
+      -c cudaProfilerApi \
+          -t cuda,nvtx \
+          --cuda-graph-trace=node \
+          -f true \
+          -o fd_${FD_ATTENTION_BACKEND}_dp4ep4tp1 \
+      ../fxy_py12_fa4/bin/python -m fastdeploy.entrypoints.openai.multi_api_server \
+          --ports "4871,4872,4873,4874" \
+          --num-servers 4 \
+          --metrics-ports "6231,6232,6233,6234" \
+          --args --model ${model_path} \
+          --engine-worker-queue-port "7831,7832,7833,7834" \
+          --cache-queue-port "9121,9122,9123,9124" \
+          --load-choices default_v1 \
+          --max-num-seqs 256 \
+          --chat-template custom_chat_template.jinja \
+          --max-model-len 22528 \
+          --enable-prefix-caching \
+          --max-num-batched-tokens 8192 \
+          --disable-custom-all-reduce \
+          --graph-optimization-config '{"use_cudagraph": true}' \
+          --tensor-parallel-size 1 \
+          --data-parallel-size 4 \
+          --enable-expert-parallel \
+          --enable-logprob \
+          --prealloc-dec-block-slot-num-threshold 36
+    infer: |
+      ../fxy_py12_fa4/bin/python \
+          ../FastDeploy/benchmarks/benchmark_serving.py \
+          --backend openai-chat \
+          --model /root/paddlejob/share-storage/gpfs/system-public/wangyanpeng04/models/GLM-4.5-Air-Multi-MTP \
+          --endpoint /v1/chat/completions \
+          --ip-list 127.0.0.1:4871,127.0.0.1:4872,127.0.0.1:4873,127.0.0.1:4874 \
+          --dataset-name EBChat \
+          --dataset-path /root/paddlejob/share-storage/gpfs/system-public/xieyunyao/FastDeploy/benchmarks/dapo_math_17k_paddlerl_40k_top32_dup_256_for_fastdeploy_2_EBChatFormat.jsonl \
+          --hyperparameter-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/sglang/debug/xyy_RL.yaml \
+          --percentile-metrics ttft,tpot,itl,e2el,s_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,output_len \
+          --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+          --num-prompts 256 \
+          --max-concurrency 256
