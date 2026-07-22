@@ -13,6 +13,4 @@ python /root/paddlejob/inference-public/bingoo/code/FastDeploy/benchmarks/benchm
     --pd-metrics \
     --max-concurrency 64 \
     --multi-turn \
-    --save-result \
-    > /root/paddlejob/inference-public/fanxiangyu/logs/client_sgl_server_tp4dp4ep4_256k_bs64.log 2>&1 &
-
+    --save-result

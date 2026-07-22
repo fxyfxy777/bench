@@ -76,28 +76,24 @@ ROUTER_DIR = BENCH_DIR / "2_router"
 CLIENT_DIR = BENCH_DIR / "3_client"
 RESULTS_DIR = BENCH_DIR / "results"
 
-# ── 手动维护的实验列表：server/router/client 三边文件名显式映射 ──────────────
-# 示例（把对应脚本放进 server/ router/ client/ 目录后取消注释）:
-# EXPERIMENTS = [
-#     {
-#         "name": "tp4dp4ep4_256k",
-#         "server": "tp4dp4ep4_256k.sh",
-#         "router": "tp4dp4ep4_256k.sh",   # 可选，没有就写 None
-#         "client": "tp4dp4ep4_256k.sh",
-#     },
-# ]
 EXPERIMENTS = [
     {
         "name": "demo_openai_chat",
         "server": "demo_openai_chat.sh",
         "router": "demo_openai_chat.sh",
-        "client": "demo_openai_chat.sh",
+        "client": "router.sh",
     },
     {
         "name": "run_ds_tp4ep4dp4_bs64",
         "server": "run_ds_tp4ep4dp4_bs64.sh",
-        "router": "demo_openai_chat.sh",
-        "client": "demo_openai_chat.sh",
+        "router": "router.sh",
+        "client": "client_backup_bs64.sh",
+    },
+    {
+        "name": "run_ds_tp4ep4dp4_bs192",
+        "server": "run_ds_tp4ep4dp4_bs192.sh",
+        "router": "router.sh",
+        "client": "client_backup_bs192.sh",
     },
 ]
 
@@ -329,7 +325,11 @@ def get_sglang_version_info() -> dict:
         print(f"  [version] 无法读取 pid={pid} 的解释器路径", flush=True)
         return info
 
-    ver = _run_quiet([python_bin, "-c", "from sglang.version import __version__; print(__version__)"])
+    # 用 importlib.metadata 直接读版本，避免触发 `import sglang` -> `import torch` 全家桶
+    # （后者冷启动可能 20~30s，超过 _run_quiet 的 timeout 被静默吞掉 → version 变 unknown）
+    ver = _run_quiet(
+        [python_bin, "-c", "import importlib.metadata as m; print(m.version('sglang'))"]
+    )
     if ver:
         info["version"] = ver
 
@@ -353,21 +353,42 @@ def get_sglang_version_info() -> dict:
         if branch:
             info["branch"] = branch
     elif location:
-        # 非可编辑安装（含 pip install git+...）：从 dist-info/direct_url.json 里的
-        # vcs_info.commit_id 兜底拿 commit（pip 从 git 源安装时会记录这个文件）
+        # 非可编辑安装：依次尝试 dist-info 里的三种记录源
+        # 1) direct_url.json 的 vcs_info.commit_id  —— pip install git+... 会写
+        # 2) direct_url.json 的 archive_info        —— pip install ./xxx.whl 不含 vcs 信息，仅记录来源
+        # 3) scm_version.json 的 node / branch      —— setuptools_scm 打包时写入的 git 元数据（本地 wheel 场景兜底）
         for dist_info in Path(location).glob("sglang-*.dist-info"):
             direct_url_file = dist_info / "direct_url.json"
             if direct_url_file.exists():
                 try:
                     data = json.loads(direct_url_file.read_text())
                 except json.JSONDecodeError:
-                    continue
+                    data = {}
                 commit_id = data.get("vcs_info", {}).get("commit_id")
                 if commit_id:
                     info["commit"] = commit_id
                     info["commit_short"] = commit_id[:9]
                     info["branch"] = data.get("vcs_info", {}).get("requested_revision", "unknown")
-                break
+
+            # scm_version.json 兜底（wheel 安装场景）
+            if info["commit"] == "unknown":
+                scm_file = dist_info / "scm_version.json"
+                if scm_file.exists():
+                    try:
+                        scm = json.loads(scm_file.read_text())
+                    except json.JSONDecodeError:
+                        scm = {}
+                    node = scm.get("node") or ""
+                    # setuptools_scm 的 node 形如 "g<hash>"，去掉前缀 g
+                    if node.startswith("g"):
+                        node = node[1:]
+                    if node:
+                        info["commit"] = node
+                        info["commit_short"] = node[:9]
+                    branch = scm.get("branch")
+                    if branch and info["branch"] == "unknown":
+                        info["branch"] = branch
+            break
     print(f"  [version] sglang version={info['version']} commit={info['commit_short']}", flush=True)
     return info
 
@@ -454,7 +475,7 @@ def report_swanlab(name: str, result: dict, run_dir: Path):
 def run_one_experiment(exp: dict, use_swanlab: bool) -> dict:
     name = exp["name"]
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = RESULTS_DIR / f"{name}_{ts}"
+    run_dir = RESULTS_DIR / f"{ts}_{name}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
     result = {"name": name, "time": ts, "status": "pending", "metrics": {}}
