@@ -1,17 +1,46 @@
 #!/usr/bin/env python3
 """
-多框架自动化压测工具（统一版）
-支持 FastDeploy / SGLang 两套框架配置
+SGLang 服务压测编排工具（简化版）
+
+目录结构:
+    bench/
+      server/<name>.sh   起服务脚本（用户提供，端口/参数等全部自包含）
+      router/<name>.sh   注册 router 脚本（可选）
+      client/<name>.sh   压测脚本（用户提供）
+      results/<name>_<timestamp>/
+        server.log
+        router.log
+        client.log
+        server_script.sh    # 起服务脚本的快照（防止 server/ 下的脚本被后续实验覆盖后无法追溯）
+        router_script.sh
+        client_script.sh
+        metrics.json         # 含起服务/测试脚本内容+解析出的参数、sglang版本+commit、测试结果指标
+
+流程（对 EXPERIMENTS 里每一条）:
+    1. 起服务       -> 等待就绪（health + 日志双重判据，日志出现错误标记直接判失败）
+    2. 探测 sglang 版本/commit（读取正在跑的 sglang 进程的真实 python 解释器）
+    3. 注册 router（如果配了）
+    4. 起测试       -> 带超时保护
+    5. 解析结果并落盘 metrics.json（同时从三份脚本原文提取 --flag/KEY=VALUE 参数）
+    6. 可选上报 swanlab：
+       - config（卡片）= 起服务/router/测试脚本原文 + 解析出的参数 + sglang版本/commit/branch
+       - log（表格/图表）= 纯数值测试结果（优先指标 + 其余 benchmark 输出，按默认顺序）
+    kill 步骤（finally 块，保证无论成功/失败/超时都执行）-> pkill -f sglang
+
+注意：client/server/router 脚本如果自己用 `&` 后台化并把输出重定向到固定文件，
+run_bench.py 会立刻拿到一个空的 stdout（因为主进程秒退），无法正确捕获压测输出/等待完成。
+请确保脚本以前台方式运行到结束（去掉末尾的 `&` 和 `> xxx.log 2>&1`），
+输出交给 run_bench.py 统一捕获到 results/<run>/xxx.log。
 
 用法:
-    python run_bench.py                          # 交互菜单，使用当前目录下 bench.yaml
-    python run_bench.py --config fd_bench.yaml   # 指定 FD 配置
-    python run_bench.py --config sglang_bench.yaml  # 指定 SGLang 配置
-    python run_bench.py --kill                   # 只 kill 当前服务
-    python run_bench.py --smoke-test             # 冒烟测试：--num-prompts 替换为 10
+    python run_bench.py                  # 交互式菜单，输入序号选择要跑的实验（直接回车=全部）
+    python run_bench.py --name xxx       # 直接跑指定 name，跳过菜单
+    python run_bench.py --no-swanlab     # 跳过 swanlab 上报
+    python run_bench.py --kill           # 测试开始前先清理一次残留进程/端口
 """
 
-import glob
+import argparse
+import json
 import os
 import re
 import signal
@@ -22,135 +51,84 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-import yaml
 
-try:
-    import openpyxl
-    from openpyxl.styles import Alignment, Font, PatternFill
-    from openpyxl.utils import get_column_letter
-except ImportError:
-    sys.exit("[error] 请先安装: pip install openpyxl")
+class GracefulExit(Exception):
+    """收到 SIGTERM/SIGINT 时抛出，让当前实验的 try/finally 正常走完清理逻辑再退出"""
 
-# ── 指标展示配置 ──────────────────────────────────────────────────────────────
-PRIORITY_COLS = [
-    ("Benchmark duration (s)",          "任务耗时 (s)"),
-    ("Mean Input Length",               "输入长度 (tok)"),
-    ("Mean Output Length",              "输出长度 (tok)"),
-    ("Request throughput (req/s)",      "QPS (req/s)"),
-    ("Total Token throughput (tok/s)",  "TPS (tok/s)"),
-    ("Output token throughput (tok/s)", "OTPS (tok/s)"),
-    ("Mean Decode",                     "解码速度 (tok/s)"),
-    ("Mean TTFT (ms)",                  "TTFT (ms)"),
-    ("Mean E2EL (ms)",                  "整句均值时延 (ms)"),
+
+def _handle_signal(signum, frame):
+    # 忽略掉后续同名信号，避免清理过程（finally 块）本身又被同一个信号打断，
+    # 导致清理逻辑跑一半就被中断（比如只 pkill 了一个 pattern 就退出）
+    signal.signal(signum, signal.SIG_IGN)
+    raise GracefulExit(f"received signal {signum}")
+
+
+# Python 默认只把 SIGINT 转成异常（KeyboardInterrupt），SIGTERM 默认直接杀死进程、
+# 不会走任何 finally 块——这也是之前排查时反复出现“进程被外部信号打断，端口/PID
+# 残留没清理”的根因。这里把 SIGTERM 也转成异常，保证不管是 Ctrl+C 还是被
+# kill/系统信号打断，run_one_experiment 的 finally 清理都会执行。
+signal.signal(signal.SIGTERM, _handle_signal)
+signal.signal(signal.SIGINT, _handle_signal)
+
+BENCH_DIR = Path(__file__).parent
+SERVER_DIR = BENCH_DIR / "1_server"
+ROUTER_DIR = BENCH_DIR / "2_router"
+CLIENT_DIR = BENCH_DIR / "3_client"
+RESULTS_DIR = BENCH_DIR / "results"
+
+# ── 手动维护的实验列表：server/router/client 三边文件名显式映射 ──────────────
+# 示例（把对应脚本放进 server/ router/ client/ 目录后取消注释）:
+# EXPERIMENTS = [
+#     {
+#         "name": "tp4dp4ep4_256k",
+#         "server": "tp4dp4ep4_256k.sh",
+#         "router": "tp4dp4ep4_256k.sh",   # 可选，没有就写 None
+#         "client": "tp4dp4ep4_256k.sh",
+#     },
+# ]
+EXPERIMENTS = [
+    {
+        "name": "demo_openai_chat",
+        "server": "demo_openai_chat.sh",
+        "router": "demo_openai_chat.sh",
+        "client": "demo_openai_chat.sh",
+    },
+    {
+        "name": "run_ds_tp4ep4dp4_bs64",
+        "server": "run_ds_tp4ep4dp4_bs64.sh",
+        "router": "demo_openai_chat.sh",
+        "client": "demo_openai_chat.sh",
+    },
 ]
-PRIORITY_KEYS  = [k for k, _ in PRIORITY_COLS]
-PRIORITY_LABEL = {k: v for k, v in PRIORITY_COLS}
 
-MEAN_ONLY_GROUPS = {"Input Length", "Output Length", "Cached Tokens"}
-SKIP_GROUPS      = {"S_TTFT", "S_ITL", "S_E2EL"}
-
-EXTRA_ORDER = [
-    "Successful requests",
-    "Total input tokens", "Total generated tokens",
-    "Median Decode", "P80 Decode", "P95 Decode", "P99 Decode", "P99.9 Decode",
-    "Median TTFT (ms)", "P80 TTFT (ms)", "P95 TTFT (ms)",
-    "P99 TTFT (ms)", "P99.9 TTFT (ms)", "P99.95 TTFT (ms)", "P99.99 TTFT (ms)",
-    "Mean TPOT (ms)", "P80 TPOT (ms)", "P95 TPOT (ms)", "P99 TPOT (ms)", "P99.9 TPOT (ms)",
-    "Mean ITL (ms)", "P80 ITL (ms)", "P95 ITL (ms)", "P99 ITL (ms)", "P99.9 ITL (ms)",
-    "Median E2EL (ms)", "P80 E2EL (ms)", "P95 E2EL (ms)",
-    "P99 E2EL (ms)", "P99.9 E2EL (ms)", "P99.95 E2EL (ms)", "P99.99 E2EL (ms)",
+# ── 统一探活/超时配置（不逐服务配置） ────────────────────────────────────────
+SERVER_HEALTH_URL = "http://127.0.0.1:30100/health"
+SERVER_READY_LOG_PATTERNS = [
+    "The server is fired up and ready to roll",
+    "Uvicorn running",
 ]
+SERVER_ERROR_LOG_PATTERNS = [
+    "Traceback (most recent call last)",
+    "CUDA out of memory",
+    "Address already in use",
+]
+SERVER_READY_TIMEOUT_SEC = 1800
+SERVER_POLL_INTERVAL_SEC = 5
 
+ROUTER_HEALTH_URL = "http://127.0.0.1:41000/v1/status"
+ROUTER_READY_TIMEOUT_SEC = 180
+ROUTER_POLL_INTERVAL_SEC = 5
 
+CLIENT_TIMEOUT_SEC = 7200
 
-def get_framework_version(framework: str, experiments: list) -> dict:
-    """从实验配置的 server 命令中自动提取框架源码路径，获取版本和 git commit"""
-    info = {"version": "unknown", "commit": "unknown", "commit_short": "unknown", "extra": ""}
+KILL_PATTERNS = ["sglang", "infer-router"]
+# 之前用到的端口：sglang server(30100)、router listen(41000)/grpc(41500)/admin(41800)
+KILL_PORTS = [30100, 41000, 41500, 41800]
 
-    first_server_cmd = ""
-    for exp in experiments:
-        cmd = exp.get("server", "").strip()
-        if cmd:
-            first_server_cmd = cmd
-            break
-    if not first_server_cmd:
-        return info
+SWANLAB_PROJECT = "sglang-bench"
 
-    if framework == "fd":
-        repo_path = _extract_path(first_server_cmd, r'PYTHONPATH="?([^":\s]+FastDeploy)')
-        if repo_path:
-            info.update(_git_info(repo_path))
-            vf = Path(repo_path) / "fastdeploy" / "version.txt"
-            if vf.exists():
-                info["extra"] = vf.read_text().strip()
-
-    elif framework == "vllm":
-        python_bin = _extract_path(first_server_cmd, r'(/\S+/bin/python\S*)')
-        if python_bin:
-            ver = _run_quiet([python_bin, "-c",
-                              "import vllm; print(vllm.__version__)"])
-            if ver:
-                info["version"] = ver
-
-    elif framework == "sglang":
-        repo_path = _extract_path(first_server_cmd, r'PYTHONPATH=([^":\s]+sglang/python)')
-        if repo_path:
-            repo_path = str(Path(repo_path).parent)
-        if repo_path:
-            info.update(_git_info(repo_path))
-        python_bin = _extract_path(first_server_cmd, r'(/\S+/bin/python\S*)')
-        if python_bin:
-            ver = _run_quiet([python_bin, "-c",
-                              "from sglang.version import __version__; print(__version__)"])
-            if ver:
-                info["version"] = ver
-
-    return info
-
-
-def _extract_path(cmd: str, pattern: str) -> str | None:
-    for line in cmd.splitlines():
-        m = re.search(pattern, line)
-        if m and Path(m.group(1)).exists():
-            return m.group(1)
-    return None
-
-
-def _git_info(repo_path: str) -> dict:
-    result = {}
-    commit = _run_quiet(["git", "-C", repo_path, "rev-parse", "HEAD"])
-    if commit:
-        result["commit"] = commit
-        result["commit_short"] = commit[:9]
-    desc = _run_quiet(["git", "-C", repo_path, "describe", "--tags", "--always"])
-    if desc:
-        result["version"] = desc
-    branch = _run_quiet(["git", "-C", repo_path, "rev-parse", "--abbrev-ref", "HEAD"])
-    if branch:
-        result["branch"] = branch
-    return result
-
-
-def _run_quiet(cmd: list, timeout: int = 10) -> str | None:
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        return r.stdout.strip() if r.returncode == 0 else None
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return None
-
-
-def should_include(key: str) -> bool:
-    for grp in SKIP_GROUPS:
-        if grp in key:
-            return False
-    for grp in MEAN_ONLY_GROUPS:
-        if grp in key and not key.startswith("Mean"):
-            return False
-    return True
-
-
-# ── 解析压测输出 ──────────────────────────────────────────────────────────────
-def parse_output(text: str) -> dict:
+# ── 指标解析（复用既有 benchmark_serving 输出格式） ──────────────────────────
+def parse_metrics(text: str) -> dict:
     metrics = {}
     in_summary = False
     for line in text.splitlines():
@@ -171,242 +149,407 @@ def parse_output(text: str) -> dict:
     return metrics
 
 
-# ── 等待服务就绪 ──────────────────────────────────────────────────────────────
-def wait_for_server(timeout: int, port: int) -> str:
-    """轮询 GET /health，返回 'ready' | 'timeout'"""
-    health_url = f"http://127.0.0.1:{port}/health"
-    print(f"  等待服务就绪（探活 {health_url}），超时 {timeout}s ...", flush=True)
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            with urllib.request.urlopen(health_url, timeout=5) as resp:
-                if resp.status == 200:
-                    print(f"  ✓ 服务已就绪（/health 返回 200）", flush=True)
-                    return "ready"
-        except Exception:
-            pass
-        remaining = int(deadline - time.time())
-        print(f"  ... 等待中，剩余 {remaining}s", end="\r", flush=True)
-        time.sleep(10)
-    print("\n  ✗ 等待超时", flush=True)
-    return "timeout"
+# ── 脚本参数提取（从 server/router/client 脚本原文中解析 --flag value / KEY=VALUE） ──
+def _cast_value(raw: str):
+    v = raw.strip().strip("'\"")
+    if re.fullmatch(r"-?\d+", v):
+        return int(v)
+    try:
+        return float(v)
+    except ValueError:
+        return v
 
 
-# ── 启动服务（后台） ──────────────────────────────────────────────────────────
-def start_server(cmd: str, log_file: Path) -> subprocess.Popen:
+def extract_params(text: str) -> dict:
+    """从脚本原文里提取 --flag value / --flag=value 以及 KEY=VALUE 形式的参数（不保证覆盖所有写法）"""
+    params = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if not line.startswith("--"):
+            m = re.match(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.+?)\\?$", line)
+            if m:
+                val = m.group(2).strip().rstrip("\\").strip()
+                if val:
+                    params[m.group(1)] = _cast_value(val)
+        for fm in re.finditer(r"--([a-zA-Z][\w-]*)(?:[=\s]+('[^']*'|\"[^\"]*\"|\S+))?", line):
+            flag = fm.group(1).replace("-", "_")
+            val = fm.group(2)
+            if val is None or val.startswith("--") or val == "\\":
+                params[flag] = True
+            else:
+                params[flag] = _cast_value(val.strip("\\").strip())
+    return params
+
+
+# ── 进程与就绪判断 ────────────────────────────────────────────────────────────
+def start_background(cmd: str, log_file: Path, cwd: Path) -> subprocess.Popen:
     with open(log_file, "w") as f:
         proc = subprocess.Popen(
-            ["bash", "-c", cmd],
+            ["bash", cmd],
             stdout=f,
-            stderr=f,
+            stderr=subprocess.STDOUT,
+            cwd=str(cwd),
             preexec_fn=os.setsid,
         )
     return proc
 
 
-# ── Kill 服务 ─────────────────────────────────────────────────────────────────
-def kill_server(port: int, proc: subprocess.Popen = None,
-                extra_ports: list = None, kill_ports: list = None,
-                cuda_devices: str = None, framework: str = "fd",
-                nsys_flush_wait: int = 0, confirm: bool = False):
-    """
-    nsys_flush_wait > 0 时，先对端口进程发 SIGTERM 并等待 nsys 写文件，
-    再执行 SIGKILL 兜底。适用于 server 命令包裹了 nsys profile 的场景。
-    """
-    all_ports = [port] + [port + offset for offset in (extra_ports or [])]
-    all_ports += [int(p) for p in (kill_ports or [])]
-    all_ports = sorted(set(all_ports))
-    print(f"  kill 服务（端口 {all_ports}）...", flush=True)
-    killed = set()
-
-    # 收集需要 kill 的 PIDs（端口）
-    port_pids = {}
-    for p in all_ports:
-        r = subprocess.run(f"lsof -ti :{p}", shell=True, capture_output=True, text=True)
-        pids = [pid.strip() for pid in r.stdout.strip().splitlines() if pid.strip()]
-        if pids:
-            port_pids[p] = pids
-
-    # 若有进程且需要确认，先问用户
-    if confirm and port_pids:
-        all_found_pids = [pid for pids in port_pids.values() for pid in pids]
-        ans = input(f"  检测到残留进程 {all_found_pids}，是否 kill？[Y/n] ").strip().lower()
-        if ans in ("n", "no"):
-            print("  跳过 kill", flush=True)
-            return
-
-    # 1. 按端口 kill
-    for p, pids in port_pids.items():
-        for pid in pids:
-            if nsys_flush_wait > 0:
-                subprocess.run(f"kill -15 {pid}", shell=True)
-            else:
-                subprocess.run(f"kill -9 {pid}", shell=True)
-            killed.add(pid)
-
-    if nsys_flush_wait > 0 and killed:
-        print(f"  已发 SIGTERM，等待 {nsys_flush_wait}s 让 nsys flush...", flush=True)
-        import time; time.sleep(nsys_flush_wait)
-        # SIGKILL 兜底，确保进程彻底退出
-        for pid in killed:
-            subprocess.run(f"kill -9 {pid} 2>/dev/null", shell=True)
-
-    # 2. 按指定 GPU 上的占用进程 kill（仅 FD 需要，sglang 不传 cuda_devices 即跳过）
-    if cuda_devices:
-        gpu_ids = [x.strip() for x in str(cuda_devices).split(",") if x.strip()]
-        for gid in gpu_ids:
-            r = subprocess.run(
-                f"nvidia-smi --query-compute-apps=pid --format=csv,noheader --id={gid}",
-                shell=True, capture_output=True, text=True,
-            )
-            for pid in r.stdout.strip().splitlines():
-                pid = pid.strip()
-                if pid and pid not in killed:
-                    subprocess.run(f"kill -9 {pid}", shell=True)
-                    killed.add(pid)
-
-    # 3. 兜底：kill 脚本进程组
-    if proc and proc.poll() is None:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, OSError):
-            pass
-
-    if killed:
-        print(f"  已 kill PID: {', '.join(sorted(killed))}", flush=True)
-    else:
-        print("  未发现需要 kill 的进程", flush=True)
-
-    # 4. 清理 FD Unix domain socket 文件（仅 FD 框架需要）
-    if framework == "fd":
-        sock_candidates = [f"/dev/shm/fd_task_queue_{p}.sock" for p in all_ports]
-        cleaned = set()
-        for sock in sock_candidates:
-            if os.path.exists(sock):
-                try:
-                    os.remove(sock)
-                    cleaned.add(sock)
-                except OSError:
-                    pass
-        if cleaned:
-            print(f"  已清理 socket 文件: {', '.join(sorted(cleaned))}", flush=True)
+def http_ok(url: str, timeout: int = 5) -> bool:
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
 
 
-# ── 运行压测 ──────────────────────────────────────────────────────────────────
-def run_infer(cmd: str, log_file: Path, run_dir: Path, cwd: Path = None) -> str:
-    print(f"  运行压测，输出实时可见 → {log_file.name}", flush=True)
+def wait_server_ready(log_file: Path, proc: subprocess.Popen) -> str:
+    """返回 'ready' | 'error' | 'timeout'"""
+    deadline = time.time() + SERVER_READY_TIMEOUT_SEC
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            print(f"  [server] 进程已退出（returncode={proc.returncode}），判定失败", flush=True)
+            return "error"
+        text = log_file.read_text(errors="replace") if log_file.exists() else ""
+        for pat in SERVER_ERROR_LOG_PATTERNS:
+            if pat in text:
+                print(f"  [server] 日志出现错误标记: {pat!r}", flush=True)
+                return "error"
+        log_ready = any(pat in text for pat in SERVER_READY_LOG_PATTERNS)
+        health_ready = http_ok(SERVER_HEALTH_URL)
+        if log_ready and health_ready:
+            print("  [server] 就绪（health 200 + 日志标记均满足）", flush=True)
+            return "ready"
+        remaining = int(deadline - time.time())
+        print(f"  [server] 等待就绪中，剩余 {remaining}s ...", end="\r", flush=True)
+        time.sleep(SERVER_POLL_INTERVAL_SEC)
+    print("\n  [server] 等待超时", flush=True)
+    return "timeout"
+
+
+def wait_router_ready() -> str:
+    deadline = time.time() + ROUTER_READY_TIMEOUT_SEC
+    while time.time() < deadline:
+        if http_ok(ROUTER_HEALTH_URL):
+            print("  [router] 就绪", flush=True)
+            return "ready"
+        remaining = int(deadline - time.time())
+        print(f"  [router] 等待就绪中，剩余 {remaining}s ...", end="\r", flush=True)
+        time.sleep(ROUTER_POLL_INTERVAL_SEC)
+    print("\n  [router] 等待超时", flush=True)
+    return "timeout"
+
+
+def run_router(script: Path, log_file: Path, cwd: Path) -> bool:
     with open(log_file, "w") as lf:
-        env = os.environ.copy()
-        env["PYTHONUNBUFFERED"] = "1"
+        r = subprocess.run(["bash", str(script)], stdout=lf, stderr=subprocess.STDOUT, cwd=str(cwd))
+    if r.returncode != 0:
+        print(f"  [router] 脚本执行失败（returncode={r.returncode}），详见 {log_file.name}", flush=True)
+        return False
+    return wait_router_ready() == "ready"
+
+
+def run_client(script: Path, log_file: Path, cwd: Path) -> tuple[str, str]:
+    """返回 (status, output)；status: 'ok' | 'timeout' | 'crashed'"""
+    with open(log_file, "w") as lf:
         proc = subprocess.Popen(
-            ["bash", "-c", cmd],
+            ["bash", str(script)],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            cwd=str(cwd or run_dir),
-            env=env,
+            cwd=str(cwd),
+            preexec_fn=os.setsid,
         )
         lines = []
-        for line in proc.stdout:
-            sys.stdout.write(line)
-            sys.stdout.flush()
-            lf.write(line)
-            lf.flush()
-            lines.append(line)
+        deadline = time.time() + CLIENT_TIMEOUT_SEC
+        try:
+            while True:
+                line = proc.stdout.readline()
+                if line:
+                    sys.stdout.write(line)
+                    lf.write(line)
+                    lines.append(line)
+                elif proc.poll() is not None:
+                    break
+                if time.time() > deadline:
+                    raise TimeoutError
+        except TimeoutError:
+            print(f"\n  [client] 超时（>{CLIENT_TIMEOUT_SEC}s），kill 压测进程", flush=True)
+            try:
+                os.killpg(os.getpgid(proc.pid), 9)
+            except (ProcessLookupError, OSError):
+                pass
+            return "timeout", "".join(lines)
         proc.wait()
-    return "".join(lines)
+    status = "ok" if proc.returncode == 0 else "crashed"
+    return status, "".join(lines)
 
 
-# ── 写 Excel ─────────────────────────────────────────────────────────────────
-def write_excel(all_results: list, out_path: Path):
-    seen_keys = []
-    for r in all_results:
-        for k in r.get("metrics", {}):
-            if k not in seen_keys and should_include(k):
-                seen_keys.append(k)
+def kill_sglang():
+    for pattern in KILL_PATTERNS:
+        print(f"  [kill] pkill -f {pattern}", flush=True)
+        subprocess.run(f"pkill -f {pattern}", shell=True)
+    for port in KILL_PORTS:
+        r = subprocess.run(f"lsof -ti :{port}", shell=True, capture_output=True, text=True)
+        pids = [p.strip() for p in r.stdout.strip().splitlines() if p.strip()]
+        if pids:
+            print(f"  [kill] 端口 {port} 被占用（pid={','.join(pids)}），kill -9", flush=True)
+            subprocess.run(f"kill -9 {' '.join(pids)}", shell=True)
 
-    ordered_keys = []
-    for k in PRIORITY_KEYS:
-        if k in seen_keys and k not in ordered_keys:
-            ordered_keys.append(k)
-    for k in EXTRA_ORDER:
-        if k in seen_keys and k not in ordered_keys:
-            ordered_keys.append(k)
-    for k in seen_keys:
-        if k not in ordered_keys:
-            ordered_keys.append(k)
 
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Results"
+# ── sglang 版本/commit 探测（读取当前正在跑的 sglang 进程的真实解释器） ──────
+def _run_quiet(cmd: list, timeout: int = 10) -> str | None:
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.stdout.strip() if r.returncode == 0 else None
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
 
-    fixed_cols  = ["框架", "实验名称", "版本", "Commit", "运行时间", "状态", "起服务脚本", "起请求脚本"]
-    metric_cols = [PRIORITY_LABEL.get(k, k) for k in ordered_keys]
-    header = fixed_cols + metric_cols
 
-    header_fill = PatternFill("solid", fgColor="2E75B6")
-    header_font = Font(bold=True, color="FFFFFF")
-    for ci, h in enumerate(header, 1):
-        cell = ws.cell(row=1, column=ci, value=h)
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center", wrap_text=True)
+def find_sglang_pid() -> int | None:
+    r = subprocess.run("pgrep -f sglang", shell=True, capture_output=True, text=True)
+    pids = [p.strip() for p in r.stdout.strip().splitlines() if p.strip()]
+    return int(pids[0]) if pids else None
 
-    ok_fill   = PatternFill("solid", fgColor="E2EFDA")
-    fail_fill = PatternFill("solid", fgColor="FCE4D6")
-    for ri, r in enumerate(all_results, 2):
-        status   = r["status"]
-        row_fill = ok_fill if status == "ok" else fail_fill
 
-        ws.cell(row=ri, column=1, value=r.get("framework", ""))
-        ws.cell(row=ri, column=2, value=r["name"])
-        ws.cell(row=ri, column=3, value=r.get("version", ""))
-        ws.cell(row=ri, column=4, value=r.get("commit", ""))
-        ws.cell(row=ri, column=5, value=r["time"])
-        ws.cell(row=ri, column=6, value=status)
-        ws.cell(row=ri, column=7, value=r.get("server_cmd", ""))
-        ws.cell(row=ri, column=8, value=r.get("infer_cmd", ""))
+def get_sglang_version_info() -> dict:
+    """探测当前正在跑的 sglang 进程使用的 python 解释器，取版本号 + git commit
+    优先读可编辑安装（源码 clone）的 .git；如果是普通 pip 安装（含 pip install git+...），
+    再尝试读 dist-info/direct_url.json 里的 vcs_info.commit_id 兜底。
+    """
+    info = {"version": "unknown", "commit": "unknown", "commit_short": "unknown", "branch": "unknown"}
+    pid = find_sglang_pid()
+    if pid is None:
+        print("  [version] 未找到运行中的 sglang 进程，跳过版本探测", flush=True)
+        return info
+    try:
+        python_bin = os.readlink(f"/proc/{pid}/exe")
+    except OSError:
+        print(f"  [version] 无法读取 pid={pid} 的解释器路径", flush=True)
+        return info
 
-        for ci, k in enumerate(ordered_keys, len(fixed_cols) + 1):
-            ws.cell(row=ri, column=ci, value=r.get("metrics", {}).get(k))
+    ver = _run_quiet([python_bin, "-c", "from sglang.version import __version__; print(__version__)"])
+    if ver:
+        info["version"] = ver
 
-        for ci in range(1, len(header) + 1):
-            ws.cell(row=ri, column=ci).fill = row_fill
+    pip_bin = str(Path(python_bin).parent / "pip")
+    out = _run_quiet([pip_bin, "show", "sglang"])
+    repo_dir = None
+    location = None
+    if out:
+        for line in out.splitlines():
+            if line.startswith("Editable project location:"):
+                repo_dir = line.split(":", 1)[1].strip()
+            elif line.startswith("Location:"):
+                location = line.split(":", 1)[1].strip()
 
-    for ci, h in enumerate(header, 1):
-        col_letter = get_column_letter(ci)
-        max_len = max(
-            len(str(h)),
-            *(len(str(ws.cell(row=ri, column=ci).value or ""))
-              for ri in range(2, len(all_results) + 2)),
+    if repo_dir and Path(repo_dir, ".git").is_dir():
+        commit = _run_quiet(["git", "-C", repo_dir, "rev-parse", "HEAD"])
+        if commit:
+            info["commit"] = commit
+            info["commit_short"] = commit[:9]
+        branch = _run_quiet(["git", "-C", repo_dir, "rev-parse", "--abbrev-ref", "HEAD"])
+        if branch:
+            info["branch"] = branch
+    elif location:
+        # 非可编辑安装（含 pip install git+...）：从 dist-info/direct_url.json 里的
+        # vcs_info.commit_id 兜底拿 commit（pip 从 git 源安装时会记录这个文件）
+        for dist_info in Path(location).glob("sglang-*.dist-info"):
+            direct_url_file = dist_info / "direct_url.json"
+            if direct_url_file.exists():
+                try:
+                    data = json.loads(direct_url_file.read_text())
+                except json.JSONDecodeError:
+                    continue
+                commit_id = data.get("vcs_info", {}).get("commit_id")
+                if commit_id:
+                    info["commit"] = commit_id
+                    info["commit_short"] = commit_id[:9]
+                    info["branch"] = data.get("vcs_info", {}).get("requested_revision", "unknown")
+                break
+    print(f"  [version] sglang version={info['version']} commit={info['commit_short']}", flush=True)
+    return info
+
+
+# ── swanlab 上报：config = 起服务/router/测试参数（卡片里看配置），log = 纯数值测试结果（表格/图表对比） ──
+# 优先指标：数据量/并发来自 client 脚本参数，其余来自 benchmark 输出解析结果
+PRIORITY_METRIC_SPEC = [
+    ("数据量", "client_params", "num_prompts"),
+    ("并发", "client_params", "max_concurrency"),
+    ("任务总耗时(s)", "metrics", "Benchmark duration (s)"),
+    ("QPS", "metrics", "Request throughput (req/s)"),
+    ("TPS", "metrics", "Total Token throughput (tok/s)"),
+    ("解码速度(Median Decode)", "metrics", "Median Decode"),
+    ("TTFT(ms)", "metrics", "Mean TTFT (ms)"),
+    ("ETE(ms)", "metrics", "Mean E2EL (ms)"),
+    ("InputTokens", "metrics", "Mean Input Length"),
+    ("CachedTokens", "metrics", "Mean Cached Tokens"),
+    ("OutputTokens", "metrics", "Mean Output Length"),
+]
+# 上面这些 metrics 字段已经被优先指标覆盖，剩余 metrics 按默认顺序原样上报，不再重复
+_PRIORITY_METRIC_KEYS = {src_key for _, src, src_key in PRIORITY_METRIC_SPEC if src == "metrics"}
+
+
+def build_swanlab_config(result: dict) -> dict:
+    """起服务/router/测试脚本的原文 + 解析出的参数 + sglang 版本信息，进 swanlab 的配置卡片"""
+    return {
+        "server_script": result.get("server_script", ""),
+        "server_param": result.get("server_params", {}),
+        "router_script": result.get("router_script", ""),
+        "router_param": result.get("router_params", {}),
+        "client_script": result.get("client_script", ""),
+        "client_param": result.get("client_params", {}),
+        "sglang_version": result.get("sglang_version", {}).get("version", "unknown"),
+        "sglang_commit": result.get("sglang_version", {}).get("commit", "unknown"),
+        "sglang_commit_short": result.get("sglang_version", {}).get("commit_short", "unknown"),
+        "sglang_branch": result.get("sglang_version", {}).get("branch", "unknown"),
+    }
+
+
+def build_swanlab_metrics(result: dict) -> dict:
+    """纯数值测试结果，进 swanlab 的 log（可画图/跨实验对比表格）"""
+    log_dict = {}
+    client_params = result.get("client_params", {})
+    metrics = result.get("metrics", {})
+
+    # 1. 优先指标（数据量/并发 + 核心结果指标）
+    for label, src, key in PRIORITY_METRIC_SPEC:
+        src_dict = client_params if src == "client_params" else metrics
+        if key in src_dict:
+            log_dict[label] = src_dict[key]
+
+    # CacheRatio 需要单独算：CachedTokens / InputTokens
+    cached = metrics.get("Mean Cached Tokens")
+    input_len = metrics.get("Mean Input Length")
+    if cached is not None and input_len:
+        log_dict["CacheRatio"] = cached / input_len
+
+    # 2. 剩余 benchmark 输出指标，按其在原始输出里的默认顺序原样上报（跳过已被优先指标覆盖的）
+    for k, v in metrics.items():
+        if k in _PRIORITY_METRIC_KEYS:
+            continue
+        log_dict[k] = v
+
+    return log_dict
+
+
+def report_swanlab(name: str, result: dict, run_dir: Path):
+    try:
+        import swanlab
+        run = swanlab.init(
+            project=SWANLAB_PROJECT,
+            experiment_name=f"{name}_{run_dir.name}",
+            logdir=str(run_dir),
+            config=build_swanlab_config(result),
         )
-        limit = 60 if ci in (7, 8) else 30
-        ws.column_dimensions[col_letter].width = min(max_len + 2, limit)
+        run.log(build_swanlab_metrics(result))
+        run.finish()
+        print(f"  [swanlab] 已上报: project={SWANLAB_PROJECT} name={name}", flush=True)
+    except Exception as e:
+        print(f"  [swanlab] 上报失败（不影响本次实验结果落盘，若是未登录/无API Key，请先执行 `swanlab login`）: {e}", flush=True)
 
-    ws.freeze_panes = "I2"
-    wb.save(out_path)
-    print(f"\n[Excel] 已保存: {out_path}")
+
+# ── 单个实验的完整生命周期 ────────────────────────────────────────────────────
+def run_one_experiment(exp: dict, use_swanlab: bool) -> dict:
+    name = exp["name"]
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = RESULTS_DIR / f"{name}_{ts}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    result = {"name": name, "time": ts, "status": "pending", "metrics": {}}
+    server_proc = None
+
+    print(f"\n{'─'*60}\n实验: {name}  结果目录: {run_dir}\n{'─'*60}", flush=True)
+
+    try:
+        # 1. 起服务
+        server_script = SERVER_DIR / exp["server"]
+        server_log = run_dir / "server.log"
+        result["server_script"] = server_script.read_text(errors="replace")
+        result["server_params"] = extract_params(result["server_script"])
+        (run_dir / "server_script.sh").write_text(result["server_script"])
+        print(f"[1/6] 起服务: {server_script.name}", flush=True)
+        server_proc = start_background(str(server_script), server_log, cwd=BENCH_DIR)
+        ready = wait_server_ready(server_log, server_proc)
+        if ready != "ready":
+            result["status"] = f"server_{ready}"
+            return result
+
+        # 2. 探测 sglang 版本/commit（server 已确认存活，进程树里能找到）
+        print("[2/6] 探测 sglang 版本信息...", flush=True)
+        result["sglang_version"] = get_sglang_version_info()
+
+        # 3. 注册 router（可选）
+        if exp.get("router"):
+            router_script = ROUTER_DIR / exp["router"]
+            router_log = run_dir / "router.log"
+            result["router_script"] = router_script.read_text(errors="replace")
+            result["router_params"] = extract_params(result["router_script"])
+            (run_dir / "router_script.sh").write_text(result["router_script"])
+            print(f"[3/6] 注册 router: {router_script.name}", flush=True)
+            if not run_router(router_script, router_log, cwd=BENCH_DIR):
+                result["status"] = "router_failed"
+                return result
+        else:
+            result["router_script"] = ""
+            result["router_params"] = {}
+            print("[3/6] 无 router 脚本，跳过", flush=True)
+
+        # 4. 起测试
+        client_script = CLIENT_DIR / exp["client"]
+        client_log = run_dir / "client.log"
+        result["client_script"] = client_script.read_text(errors="replace")
+        result["client_params"] = extract_params(result["client_script"])
+        (run_dir / "client_script.sh").write_text(result["client_script"])
+        print(f"[4/6] 起测试: {client_script.name}", flush=True)
+        run_status, output = run_client(client_script, client_log, cwd=BENCH_DIR)
+        result["run_status"] = run_status
+
+        # 5. 解析结果
+        metrics = parse_metrics(output)
+        result["metrics"] = metrics
+        result["parse_status"] = "parsed" if metrics else "parse_failed"
+        result["status"] = "ok" if run_status == "ok" else run_status
+
+        (run_dir / "metrics.json").write_text(json.dumps(result, ensure_ascii=False, indent=2))
+        print(f"[5/6] 结果已写入: {run_dir / 'metrics.json'}", flush=True)
+
+        # 6. swanlab 上报
+        if use_swanlab and metrics:
+            print("[6/6] 上报 swanlab...", flush=True)
+            report_swanlab(name, result, run_dir)
+        else:
+            print("[6/6] 跳过 swanlab 上报", flush=True)
+
+        return result
+    finally:
+        print("[kill] 清理服务与测试进程...", flush=True)
+        kill_sglang()
+        if server_proc and server_proc.poll() is None:
+            print(f"  [kill] killpg server_proc pid={server_proc.pid}", flush=True)
+            try:
+                os.killpg(os.getpgid(server_proc.pid), 9)
+                print(f"  [kill] killpg server_proc pid={server_proc.pid} 完成", flush=True)
+            except (ProcessLookupError, OSError) as e:
+                print(f"  [kill] killpg server_proc pid={server_proc.pid} 失败: {e!r}", flush=True)
 
 
-# ── 交互菜单 ──────────────────────────────────────────────────────────────────
-def show_menu(experiments: list, framework: str) -> list:
+def show_menu(experiments: list) -> list:
+    """打印实验列表，让用户输入序号选择要跑哪几个，返回选中的下标列表"""
     print("\n" + "=" * 60)
-    print(f"  自动化压测  [{framework}]")
+    print("  SGLang 压测实验列表")
     print("=" * 60)
     print(f"  [0] 全部运行 ({len(experiments)} 个实验)")
     for i, exp in enumerate(experiments, 1):
         print(f"  [{i:2d}] {exp['name']}")
-    print("  ─────────────────────────────────────────────────────")
-    print("  [k] Kill 当前服务")
     print("  [q] 退出")
     print("=" * 60)
-    raw = input("选择（多个用逗号，如 1,3）: ").strip().lower()
+    raw = input("选择（多个用逗号，如 1,3；直接回车=全部）: ").strip().lower()
 
     if raw in ("q", "quit"):
         sys.exit(0)
-    if raw == "k":
-        return "kill"
-    if raw in ("0", "all"):
+    if raw in ("0", "all", ""):
         return list(range(len(experiments)))
     indices = []
     for part in raw.split(","):
@@ -418,203 +561,48 @@ def show_menu(experiments: list, framework: str) -> list:
             else:
                 print(f"  [warn] 序号 {part} 超出范围，忽略")
         else:
-            print(f"  [warn] 无效输入 '{part}'，忽略")
+            print(f"  [warn] 无效输入 {part!r}，忽略")
     return indices
 
 
-# ── 主流程 ────────────────────────────────────────────────────────────────────
 def main():
-    # 清理代理环境变量，避免 localhost 请求被 Squid 等代理拦截
-    for key in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
-        os.environ.pop(key, None)
-
-    import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default=Path(__file__).parent / "bench.yaml",
-                        help="YAML 配置文件路径（默认 bench.yaml）")
-    parser.add_argument("--kill", action="store_true", help="只 kill 当前服务")
-    parser.add_argument("--smoke-test", action="store_true",
-                        help="冒烟测试：将所有 --num-prompts 替换为 10")
-    parser.add_argument("--test", action="store_true",
-                        help="测试运行：日志和结果写入 test 目录，而不是 results 目录")
+    parser.add_argument("--name", help="只跑指定 name 的实验（跳过交互式选择）")
+    parser.add_argument("--no-swanlab", action="store_true", help="跳过 swanlab 上报")
+    parser.add_argument("--kill", action="store_true", help="测试开始前先执行一次 kill_sglang() 清理残留进程/端口")
     args = parser.parse_args()
 
-    cfg_path = Path(args.config)
-    if not cfg_path.exists():
-        sys.exit(f"[error] 配置文件不存在: {cfg_path}")
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    with open(cfg_path) as f:
-        cfg = yaml.safe_load(f)
+    try:
+        if args.kill:
+            print("[预清理] 执行 kill_sglang()...", flush=True)
+            kill_sglang()
 
-    g = cfg.get("global", {})
-
-    # 从配置文件名自动推断框架名，也可在 global.framework 里显式指定
-    framework = g.get("framework") or (
-        "fd" if "fd" in cfg_path.stem.lower() else
-        "sglang" if "sglang" in cfg_path.stem.lower() else
-        "vllm" if "vllm" in cfg_path.stem.lower() else
-        cfg_path.stem
-    )
-
-    port              = g.get("port", 2786)
-    extra_ports       = g.get("extra_ports_offsets", [])
-    kill_ports        = g.get("kill_ports", [])
-    ready_timeout     = g.get("server_ready_timeout", 300)
-    shutdown_wait     = g.get("shutdown_wait", 20)
-    cuda_devices      = g.get("CUDA_VISIBLE_DEVICES", None)
-    results_dir       = Path(cfg_path.parent) / ("test" if args.test else g.get("results_dir", "./results"))
-
-    experiments = cfg.get("experiments", [])
-
-    if args.kill:
-        kill_server(port, extra_ports=extra_ports, kill_ports=kill_ports, cuda_devices=cuda_devices, framework=framework)
-        return
-
-    selection = show_menu(experiments, framework)
-    if selection == "kill":
-        kill_server(port, extra_ports=extra_ports, kill_ports=kill_ports, cuda_devices=cuda_devices, framework=framework)
-        return
-    if not selection:
-        print("未选择任何实验，退出。")
-        return
-
-    # 获取框架版本信息
-    fw_ver = get_framework_version(framework, experiments)
-    ver_line = f"{fw_ver['version']}  commit={fw_ver['commit_short']}"
-    if fw_ver.get("branch"):
-        ver_line += f"  branch={fw_ver['branch']}"
-    print(f"\n[版本] {framework}: {ver_line}")
-    if fw_ver.get("extra"):
-        for line in fw_ver["extra"].splitlines():
-            print(f"        {line}")
-
-    run_id  = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = results_dir / f"{framework}_{run_id}"
-    run_dir.mkdir(parents=True, exist_ok=True)
-    print(f"\n框架: {framework}  结果目录: {run_dir}\n")
-
-    # 保存版本信息到结果目录
-    with open(run_dir / "version_info.txt", "w") as f:
-        f.write(f"framework: {framework}\n")
-        f.write(f"version: {fw_ver['version']}\n")
-        f.write(f"commit: {fw_ver['commit']}\n")
-        if fw_ver.get("branch"):
-            f.write(f"branch: {fw_ver['branch']}\n")
-        if fw_ver.get("extra"):
-            f.write(f"\n{fw_ver['extra']}\n")
-
-    all_results = []
-    excel_path  = run_dir / f"{framework}_bench_{run_id}.xlsx"
-    first_kill_done = False
-
-    for idx in selection:
-        exp  = experiments[idx]
-        name = exp["name"]
-        print(f"\n{'─'*60}")
-        print(f"[{idx+1}/{len(experiments)}] [{framework}] 实验: {name}")
-        print(f"{'─'*60}")
-
-        server_log = run_dir / f"{idx+1}_{name}_server.log"
-        infer_log  = run_dir / f"{idx+1}_{name}_infer.log"
-
-        # 1. 启动服务
-        server_cmd = exp.get("server", "").strip()
-        proc = None
-        if server_cmd:
-            if args.smoke_test:
-                server_cmd_display = server_cmd
-            # FD 框架：为每个实验单独保存日志，避免被后续实验覆盖
-            if framework == "fd":
-                fd_log_dir = run_dir / f"{idx+1}_{name}_fd_log"
-                fd_log_dir.mkdir(parents=True, exist_ok=True)
-                server_cmd = f"export FD_LOG_DIR={fd_log_dir}\n" + server_cmd
-                print(f"  FD 日志目录 → {fd_log_dir.name}", flush=True)
-            print(f"  预清理残留进程...", flush=True)
-            if not first_kill_done:
-                kill_server(port, extra_ports=extra_ports, kill_ports=kill_ports, cuda_devices=cuda_devices, framework=framework, confirm=True)
-                first_kill_done = True
-            else:
-                kill_server(port, extra_ports=extra_ports, kill_ports=kill_ports, cuda_devices=cuda_devices, framework=framework)
-            time.sleep(3)
-            print(f"  启动服务 → {server_log.name}", flush=True)
-            proc = start_server(server_cmd, server_log)
-            ready = wait_for_server(ready_timeout, port)
-            if ready != "ready":
-                status = "server_timeout"
-                label  = "启动超时"
-                print(f"  [SKIP] 服务{label}，跳过实验 {name}")
-                kill_server(port, proc, extra_ports=extra_ports, kill_ports=kill_ports, cuda_devices=cuda_devices, framework=framework)
-                all_results.append({
-                    "framework": framework,
-                    "name": name,
-                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "status": status,
-                    "server_cmd": server_cmd,
-                    "infer_cmd": "",
-                    "metrics": {},
-                })
-                write_excel(all_results, excel_path)
-                print(f"  已实时写入 Excel: {excel_path.name}", flush=True)
-                continue
+        if args.name:
+            experiments = [e for e in EXPERIMENTS if e["name"] == args.name]
+            if not experiments:
+                sys.exit(f"[error] 未找到名为 {args.name} 的实验")
         else:
-            print("  server 为空，跳过启动（假设服务已在运行）")
+            selection = show_menu(EXPERIMENTS)
+            if not selection:
+                print("未选择任何实验，退出。")
+                return
+            experiments = [EXPERIMENTS[i] for i in selection]
 
-        # 2. 运行压测
-        infer_cmd = exp.get("infer", "").strip()
-        if infer_cmd and args.smoke_test:
-            infer_cmd = re.sub(r"(--num-prompts\s+)\d+", r"\g<1>10", infer_cmd)
-            print("  [smoke-test] --num-prompts 已替换为 10", flush=True)
-        output = ""
-        if infer_cmd:
-            output = run_infer(infer_cmd, infer_log, run_dir, cwd=cfg_path.parent)
-        else:
-            print("  infer 为空，跳过压测")
+        all_results = []
+        for exp in experiments:
+            result = run_one_experiment(exp, use_swanlab=not args.no_swanlab)
+            all_results.append(result)
+            print(f"\n[完成] {exp['name']}: status={result['status']}", flush=True)
+    except GracefulExit as e:
+        print(f"\n[中断] 收到退出信号（{e}），已执行清理，停止后续实验。", flush=True)
+        sys.exit(130)
 
-        # 3. 解析结果
-        metrics = parse_output(output)
-        status  = "ok" if metrics.get("Successful requests", 0) > 0 else "failed"
-        if metrics:
-            print(f"  ✓ {len(metrics)} 项指标  "
-                  f"QPS={metrics.get('Request throughput (req/s)', 'N/A')}  "
-                  f"TTFT={metrics.get('Mean TTFT (ms)', 'N/A')}ms")
-        else:
-            print("  ✗ 未解析到指标（压测可能失败）")
-
-        all_results.append({
-            "framework": framework,
-            "name": name,
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "status": status,
-            "version": fw_ver.get("version", ""),
-            "commit": fw_ver.get("commit_short", ""),
-            "server_cmd": server_cmd,
-            "infer_cmd": infer_cmd,
-            "metrics": metrics,
-        })
-
-        # 每个实验后立即写 Excel
-        write_excel(all_results, excel_path)
-        print(f"  已实时写入 Excel: {excel_path.name}", flush=True)
-
-        # 4. Kill 服务
-        # if server_cmd:
-        #     nsys_flush_wait = int(exp.get("nsys_flush_wait", 0))
-        #     kill_server(port, proc, extra_ports=extra_ports, cuda_devices=cuda_devices,
-        #                 framework=framework, nsys_flush_wait=nsys_flush_wait)
-        #     print(f"  等待 GPU 显存释放 {shutdown_wait}s ...", flush=True)
-        #     time.sleep(shutdown_wait)
-
-    print(f"\n{'='*60}")
-    print(f"  全部完成  [{framework}]  共 {len(all_results)} 个实验")
-    print(f"  Excel: {excel_path}")
-    print(f"{'='*60}")
+    print(f"\n{'='*60}\n全部完成，共 {len(all_results)} 个实验\n{'='*60}")
+    for r in all_results:
+        print(f"  {r['name']}: {r['status']}")
 
 
 if __name__ == "__main__":
     main()
-
-# 后台运行示例:
-# echo "0" | nohup python run_bench.py --config fd_bench.yaml > out_fd.txt 2>&1 &
-# echo "0" | nohup python run_bench.py --config sglang_bench.yaml > out_sglang.txt 2>&1 &
-
-# ps -eo pid,cmd | grep hung.py | grep -v grep | awk '{print $1}' | xargs kill -9
