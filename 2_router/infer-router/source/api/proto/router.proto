@@ -1,0 +1,160 @@
+syntax = "proto3";
+
+package router;
+
+option go_package = "github.com/yzx/rl-router/api/proto/routerpb";
+
+// StepPhase represents the current phase of a training step.
+enum StepPhase {
+  STEP_IDLE = 0;
+  STEP_SERVING = 1;
+  STEP_DRAINING = 2;
+}
+
+message ResourceGroupStepState {
+  string resource_group = 1;
+  StepPhase phase = 2;
+  int64 step_id = 3;
+  bool paused = 4;
+}
+
+// SchedulerService is the gRPC interface exposed by the Scheduler (control plane).
+// Gateways call these RPCs to allocate/release routes and register themselves.
+service SchedulerService {
+  // Allocate selects a backend instance for the incoming request.
+  rpc Allocate(AllocateRequest) returns (AllocateResponse);
+  // Release notifies the scheduler that a request has completed.
+  rpc Release(ReleaseRequest) returns (ReleaseResponse);
+  // AllocatePD selects a prefill + decode instance pair for PD-split inference.
+  rpc AllocatePD(AllocatePDRequest) returns (AllocatePDResponse);
+  // ReleasePD releases a prefill or decode allocation slot.
+  rpc ReleasePD(ReleasePDRequest) returns (ReleasePDResponse);
+  // Register registers a gateway node with the scheduler.
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  // Heartbeat reports gateway liveness and receives step state updates.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}
+
+// ---------- Allocate ----------
+
+message AllocateRequest {
+  string trace_id = 1;
+  map<string, string> labels = 2; // metadata only; resource_group is explicit
+  string gateway_id = 3;
+  string request_id = 4;      // idempotency key: same request_id returns cached result
+  string session_id = 5;      // session affinity key for SessionAwarePolicy
+  string request_text = 6;    // concatenated message content for cache-aware prefix matching
+  repeated int32 request_token_ids = 7; // real token IDs from prompt_token_ids for token-level cache routing
+  string resource_group = 8;
+}
+
+message AllocateResponse {
+  string instance_id = 1;
+  string endpoint = 2;
+  string allocation_id = 3;   // unique allocation identifier, used for idempotent Release
+}
+
+// ---------- Release ----------
+
+message ReleaseRequest {
+  string instance_id = 1;
+  int64  duration_ms = 2;
+  double gpu_usage = 3;
+  string error_code = 4;
+  string gateway_id = 5;
+  string allocation_id = 6;   // idempotency key: duplicate release with same allocation_id is a no-op
+  int64  prompt_tokens = 7;
+  int64  completion_tokens = 8;
+  int64  total_tokens = 9;
+}
+
+message ReleaseResponse {}
+
+// ---------- Register ----------
+
+message RegisterRequest {
+  string gateway_id = 1;
+  string gateway_addr = 2;
+  map<string, string> labels = 3;
+}
+
+message RegisterResponse {
+  bool success = 1;
+  string message = 2;
+  StepPhase phase = 3;
+  int64 step_id = 4;
+  repeated ResourceGroupStepState resource_group_states = 5;
+}
+
+// ---------- Heartbeat ----------
+
+// PendingRelease carries a release that the gateway could not deliver via the
+// normal Release/ReleasePD RPC after exhausting retries. Piggybacked on the
+// next successful heartbeat for guaranteed delivery.
+message PendingRelease {
+  string instance_id   = 1;
+  string gateway_id    = 2;
+  string allocation_id = 3;
+  string role          = 4;  // empty for normal release; "prefill" or "decode" for PD
+}
+
+message HeartbeatRequest {
+  string gateway_id = 1;
+  int64  active_connections = 2;
+  int64  timestamp_ms = 3;
+  repeated PendingRelease pending_releases = 4;
+}
+
+message HeartbeatResponse {
+  bool success = 1;
+  StepPhase phase = 2;
+  int64 step_id = 3;
+  repeated ResourceGroupStepState resource_group_states = 4;
+}
+
+// ---------- AllocatePD ----------
+
+// PDInstanceInfo carries the full instance metadata needed by the gateway
+// to build disaggregate_info and forward to P/D backends.
+message PDInstanceInfo {
+  string instance_id = 1;
+  string endpoint = 2;          // canonical inference address, host:port
+  string host = 3;              // bare host IP
+  reserved 4;
+  repeated string transfer_protocol = 5;
+  repeated string rdma_ports = 6;
+  repeated string device_ids = 7;
+  int32 tp_size = 8;
+  string connector_port = 9;    // port for PD connector (disaggregated serving)
+}
+
+message AllocatePDRequest {
+  string trace_id = 1;
+  string gateway_id = 2;
+  string request_id = 3;
+  string session_id = 4;
+  string request_text = 5;       // used for token estimation and cache-aware strategy
+  repeated int32 request_token_ids = 6; // real token IDs from prompt_token_ids for token-level cache routing
+  map<string, string> labels = 7; // metadata only; resource_group is explicit
+  string resource_group = 8;
+}
+
+message AllocatePDResponse {
+  PDInstanceInfo prefill = 1;
+  PDInstanceInfo decode = 2;
+  string prefill_allocation_id = 3;
+  string decode_allocation_id = 4;
+}
+
+// ---------- ReleasePD ----------
+
+message ReleasePDRequest {
+  string instance_id = 1;
+  string gateway_id = 2;
+  string allocation_id = 3;
+  string role = 4;              // "prefill" or "decode"
+  int64 duration_ms = 5;
+  string error_code = 6;
+}
+
+message ReleasePDResponse {}

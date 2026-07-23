@@ -1,0 +1,16 @@
+python /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/FastDeploy/benchmarks/benchmark_serving.py \
+    --backend openai-chat \
+    --model EB45T \
+    --endpoint /v1/chat/completions \
+    --ip-list 127.0.0.1:41000 \
+    --dataset-name EBChat \
+    --dataset-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/bench/swe_data_256k_64.json \
+    --percentile-metrics ttft,tpot,itl,e2el,s_ttft,res_ttft,s_itl,s_e2el,s_decode,input_len,s_input_len,reasoning_len,output_len \
+    --metric-percentiles 80,95,99,99.9,99.95,99.99 \
+    --hyperparameter-path /root/paddlejob/share-storage/gpfs/system-public/fanxiangyu/fxy/bench/request.yaml \
+    --num-prompts 64 \
+    --drop-ratio 0.1 \
+    --pd-metrics \
+    --max-concurrency 64 \
+    --multi-turn \
+    --save-result

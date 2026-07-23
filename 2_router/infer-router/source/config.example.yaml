@@ -1,0 +1,80 @@
+# OneRouter configuration file
+# All values shown below are the defaults.
+# Uncomment and modify as needed.
+
+# Run mode: gateway, scheduler, hybrid
+# mode: hybrid
+
+# HTTP listen address
+# listen_addr: ":8080"
+
+# gRPC listen address (scheduler)
+# grpc_addr: ":9090"
+
+# Remote scheduler gRPC address (required in gateway mode)
+# scheduler_addr: ""
+
+# Scheduling policy: round_robin, min_load, min_request, session_aware, session_aware_v3, session_aware_v4, cache_aware
+# policy: min_load
+
+# --- session_aware_v3 策略参数 ---
+# max_session_load: 100        # 单实例最大承载 session/请求数
+# load_diff_threshold: 1       # 负载差值阈值，越小迁移越激进
+
+# --- cache_aware 策略参数（基于 radix tree 前缀缓存路由，参考 sglang） ---
+# cache_threshold: 0.5          # 前缀匹配率阈值，高于此值路由到匹配实例
+# balance_abs_threshold: 32     # 负载绝对差值阈值，超过进入不均衡模式
+# balance_rel_threshold: 1.1    # 负载相对比例阈值，超过进入不均衡模式
+# max_tree_size: 10000          # 每 tenant radix tree 最大字节数，超过 LRU 驱逐
+# eviction_interval_sec: 60     # 驱逐检查间隔（秒）
+# max_session_load: 100         # 单实例最大在飞请求数
+
+# --- session_aware_v4 策略参数（V3 + 双模式路由 + 堆追踪 + session LRU 驱逐） ---
+# max_session_load: 100         # 单实例最大在飞请求数
+# load_diff_threshold: 1        # CompareAndSchedule 迁移灵敏度
+# balance_abs_threshold: 32     # 负载绝对差值阈值，超过进入不均衡模式
+# balance_rel_threshold: 1.1    # 负载相对比例阈值，超过进入不均衡模式
+# session_evict_epochs: 6000    # session LRU 驱逐间隔（epoch 数），0 禁用
+
+# --- PD splitwise 调度参数 ---
+# splitwise:
+#   enabled: false
+#   prefill_policy: pd_cache_aware
+#   decode_policy: request_num
+#   max_reschedule_retries: 1000
+#   max_alloc_retries: 100
+#   backend_response_header_timeout: 5m
+#   cache_block_size: 64
+#   hit_ratio_weight: 1.0
+#   load_balance_weight: 0.5
+#   balance_abs_threshold: 30.0
+#   balance_rel_threshold: 0.01
+
+# Externally reachable address for this gateway.
+# If empty, auto-detected from listen_addr.
+# advertise_addr: ""
+
+# Heartbeat interval for gateway → scheduler registration
+# heartbeat_interval: 5s
+
+# Heartbeat timeout for scheduler to expire stale gateways (must be > heartbeat_interval)
+# heartbeat_timeout: 15s
+
+# Max time to wait for graceful shutdown
+# shutdown_grace: 15s
+
+# Logging
+# log:
+#   level: info           # debug, info, warn, error
+#   access_level: info    # access log level (default: same as level)
+#   format: console       # json, console
+#   slow_request: 30s     # slow request warning threshold
+#   log_dir: ""           # directory for log files; empty = stderr-only (dev mode)
+#   max_size_mb: 500      # max size per log file before rotation (MB)
+#   max_backups: 5        # max rotated files to keep
+#   max_age_days: 30      # max age of rotated files (days)
+#   compress: true        # gzip compress rotated files
+
+# Metrics (Prometheus)
+# metrics:
+#   enabled: true

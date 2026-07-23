@@ -1,0 +1,5 @@
+max_tokens: 10240
+top_p: 1.0
+temperature: 1.0
+extra:
+  timeout: 10800

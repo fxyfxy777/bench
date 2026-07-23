@@ -1,0 +1,40 @@
+# Binaries
+bin/
+*.exe
+
+# Benchmark binaries
+benchmarks/sse-bench/sse-bench
+benchmarks/sse-bench/proxybench
+benchmarks/sse-bench/optbench
+benchmarks/sse-bench/fwbench
+
+# Go
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# RC (rollout-controller) runtime
+tests/integration/rc/bin/
+tests/integration/rc/log/
+tests/integration/rc/data/
+tests/integration/dump.rdb
+
+# OTHERS
+.VSCodeCounter
+coverage.out
+cover.out
+go-perf-concurrency-workspace
+__pycache__
+docs/tmp/
+output.tar.gz
+source/
+.agents/
+.comate/

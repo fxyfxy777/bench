@@ -1,0 +1,3 @@
+2026-06-09T19:46:40.147+0800	INFO	access	logger/middleware.go:65	request completed	{"trace_id": "", "request_id": "", "gw": "hybrid", "event": "REQUEST_COMPLETE", "status": "OK", "status": 200, "latency": "135.445641ms", "bytes": 42}
+2026-06-09T19:47:02.239+0800	INFO	access	logger/middleware.go:65	request completed	{"trace_id": "", "request_id": "", "gw": "hybrid", "event": "REQUEST_COMPLETE", "status": "OK", "status": 200, "latency": "353.023µs", "bytes": 42}
+2026-06-09T19:47:32.695+0800	INFO	access	logger/middleware.go:65	request completed	{"trace_id": "", "request_id": "", "gw": "hybrid", "event": "REQUEST_COMPLETE", "status": "OK", "status": 200, "latency": "207.732µs", "bytes": 42}

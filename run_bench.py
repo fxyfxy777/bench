@@ -70,7 +70,7 @@ def _handle_signal(signum, frame):
 signal.signal(signal.SIGTERM, _handle_signal)
 signal.signal(signal.SIGINT, _handle_signal)
 
-BENCH_DIR = Path(__file__).parent
+BENCH_DIR = Path(__file__).resolve().parent
 SERVER_DIR = BENCH_DIR / "1_server"
 ROUTER_DIR = BENCH_DIR / "2_router"
 CLIENT_DIR = BENCH_DIR / "3_client"
@@ -94,6 +94,12 @@ EXPERIMENTS = [
         "server": "run_ds_tp4ep4dp4_bs192.sh",
         "router": "router.sh",
         "client": "client_backup_bs192.sh",
+    },
+    {
+        "name": "Bzz2_run_ds_tp4ep4dp4_bs64",
+        "server": "bench/1_server/B_ds_256k.sh",
+        "router": "Bzz2_router.sh",
+        "client": "Bzz2_client_backup_bs64.sh",
     },
 ]
 
@@ -241,7 +247,7 @@ def run_router(script: Path, log_file: Path, cwd: Path) -> bool:
     with open(log_file, "w") as lf:
         r = subprocess.run(["bash", str(script)], stdout=lf, stderr=subprocess.STDOUT, cwd=str(cwd))
     if r.returncode != 0:
-        print(f"  [router] 脚本执行失败（returncode={r.returncode}），详见 {log_file.name}", flush=True)
+        print(f"  [router] 脚本执行失败（returncode={r.returncode}），详见 {log_file.resolve()}", flush=True)
         return False
     return wait_router_ready() == "ready"
 
@@ -485,12 +491,12 @@ def run_one_experiment(exp: dict, use_swanlab: bool) -> dict:
 
     try:
         # 1. 起服务
-        server_script = SERVER_DIR / exp["server"]
+        server_script = SERVER_DIR / exp["server"].split("/")[-1]
         server_log = run_dir / "server.log"
         result["server_script"] = server_script.read_text(errors="replace")
         result["server_params"] = extract_params(result["server_script"])
         (run_dir / "server_script.sh").write_text(result["server_script"])
-        print(f"[1/6] 起服务: {server_script.name}", flush=True)
+        print(f"[1/6] 起服务: {server_script.resolve()}", flush=True)
         server_proc = start_background(str(server_script), server_log, cwd=BENCH_DIR)
         ready = wait_server_ready(server_log, server_proc)
         if ready != "ready":
@@ -503,12 +509,12 @@ def run_one_experiment(exp: dict, use_swanlab: bool) -> dict:
 
         # 3. 注册 router（可选）
         if exp.get("router"):
-            router_script = ROUTER_DIR / exp["router"]
+            router_script = ROUTER_DIR / exp["router"].split("/")[-1]
             router_log = run_dir / "router.log"
             result["router_script"] = router_script.read_text(errors="replace")
             result["router_params"] = extract_params(result["router_script"])
             (run_dir / "router_script.sh").write_text(result["router_script"])
-            print(f"[3/6] 注册 router: {router_script.name}", flush=True)
+            print(f"[3/6] 注册 router: {router_script.resolve()}", flush=True)
             if not run_router(router_script, router_log, cwd=BENCH_DIR):
                 result["status"] = "router_failed"
                 return result
@@ -518,12 +524,12 @@ def run_one_experiment(exp: dict, use_swanlab: bool) -> dict:
             print("[3/6] 无 router 脚本，跳过", flush=True)
 
         # 4. 起测试
-        client_script = CLIENT_DIR / exp["client"]
+        client_script = CLIENT_DIR / exp["client"].split("/")[-1]
         client_log = run_dir / "client.log"
         result["client_script"] = client_script.read_text(errors="replace")
         result["client_params"] = extract_params(result["client_script"])
         (run_dir / "client_script.sh").write_text(result["client_script"])
-        print(f"[4/6] 起测试: {client_script.name}", flush=True)
+        print(f"[4/6] 起测试: {client_script.resolve()}", flush=True)
         run_status, output = run_client(client_script, client_log, cwd=BENCH_DIR)
         result["run_status"] = run_status
 

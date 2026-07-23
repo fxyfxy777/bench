@@ -1,0 +1,12 @@
+mode: hybrid
+listen_addr: ":41000"   # router服务端口
+grpc_addr: ":41500"
+admin_addr: ":41800"
+policy: min_load
+max_request_load: 0
+log:
+  level: debug
+  format: console
+  log_dir: "./logs"   # router日志打印路径
+metrics:
+  enabled: true
