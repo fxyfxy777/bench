@@ -8,15 +8,18 @@ SGLang 服务压测编排工具（简化版）
       router/<name>.sh   注册 router 脚本（可选）
       client/<name>.sh   压测脚本（用户提供）
       results/<name>_<timestamp>/
+      1_server/
         server.log
-        router.log
-        client.log
         server_script.sh    # 起服务脚本的快照（防止 server/ 下的脚本被后续实验覆盖后无法追溯）
+      2_router/
+        router.log
         router_script.sh
+      3_client/
+        client.log
         client_script.sh
-        metrics.json         # 含起服务/测试脚本内容+解析出的参数、sglang版本+commit、测试结果指标
+      metrics.json         # 含起服务/测试脚本内容+解析出的参数、sglang版本+commit、测试结果指标
 
-流程（对 EXPERIMENTS 里每一条）:
+流程（对 experiments.json 里每一条）:
     1. 起服务       -> 等待就绪（health + 日志双重判据，日志出现错误标记直接判失败）
     2. 探测 sglang 版本/commit（读取正在跑的 sglang 进程的真实 python 解释器）
     3. 注册 router（如果配了）
@@ -76,32 +79,12 @@ ROUTER_DIR = BENCH_DIR / "2_router"
 CLIENT_DIR = BENCH_DIR / "3_client"
 RESULTS_DIR = BENCH_DIR / "results"
 
-EXPERIMENTS = [
-    {
-        "name": "demo_openai_chat",
-        "server": "demo_openai_chat.sh",
-        "router": "demo_openai_chat.sh",
-        "client": "router.sh",
-    },
-    {
-        "name": "run_ds_tp4ep4dp4_bs64",
-        "server": "run_ds_tp4ep4dp4_bs64.sh",
-        "router": "router.sh",
-        "client": "client_backup_bs64.sh",
-    },
-    {
-        "name": "run_ds_tp4ep4dp4_bs192",
-        "server": "run_ds_tp4ep4dp4_bs192.sh",
-        "router": "router.sh",
-        "client": "client_backup_bs192.sh",
-    },
-    {
-        "name": "Bzz2_run_ds_tp4ep4dp4_bs64",
-        "server": "bench/1_server/B_ds_256k.sh",
-        "router": "Bzz2_router.sh",
-        "client": "Bzz2_client_backup_bs64.sh",
-    },
-]
+EXPERIMENTS_FILE = BENCH_DIR / "experiments.json"
+
+
+def load_experiments() -> list:
+    with open(EXPERIMENTS_FILE, encoding="utf-8") as f:
+        return json.load(f)
 
 # ── 统一探活/超时配置（不逐服务配置） ────────────────────────────────────────
 SERVER_HEALTH_URL = "http://127.0.0.1:30100/health"
@@ -117,7 +100,10 @@ SERVER_ERROR_LOG_PATTERNS = [
 SERVER_READY_TIMEOUT_SEC = 1800
 SERVER_POLL_INTERVAL_SEC = 5
 
-ROUTER_HEALTH_URL = "http://127.0.0.1:41000/v1/status"
+# 不同 router 实现的健康检查路径不一样（infer-router 用 /v1/status，sglang_router 用 /health），
+# 依次探测，任意一个 200 即认为就绪，避免因为换了 router 实现就要改代码/配置
+ROUTER_HEALTH_PATHS = ["/v1/status", "/health", "/healthz"]
+ROUTER_HEALTH_BASE_URL = "http://127.0.0.1:41000"
 ROUTER_READY_TIMEOUT_SEC = 180
 ROUTER_POLL_INTERVAL_SEC = 5
 
@@ -187,9 +173,12 @@ def extract_params(text: str) -> dict:
 
 # ── 进程与就绪判断 ────────────────────────────────────────────────────────────
 def start_background(cmd: str, log_file: Path, cwd: Path) -> subprocess.Popen:
-    with open(log_file, "w") as f:
+    # 子进程 stdout 一旦重定向到文件（而非 tty），libc 会从行缓冲切换成全缓冲，
+    # 输出要攒够一个 buffer（通常几 KB）才 flush，导致日志文件长时间没有实时更新。
+    # 用 stdbuf -oL -eL 强制子进程的 stdout/stderr 保持行缓冲，日志才能实时写入。
+    with open(log_file, "w", buffering=1) as f:
         proc = subprocess.Popen(
-            ["bash", cmd],
+            ["stdbuf", "-oL", "-eL", "bash", cmd],
             stdout=f,
             stderr=subprocess.STDOUT,
             cwd=str(cwd),
@@ -233,9 +222,10 @@ def wait_server_ready(log_file: Path, proc: subprocess.Popen) -> str:
 def wait_router_ready() -> str:
     deadline = time.time() + ROUTER_READY_TIMEOUT_SEC
     while time.time() < deadline:
-        if http_ok(ROUTER_HEALTH_URL):
-            print("  [router] 就绪", flush=True)
-            return "ready"
+        for path in ROUTER_HEALTH_PATHS:
+            if http_ok(ROUTER_HEALTH_BASE_URL + path):
+                print(f"  [router] 就绪（探活路径: {path}）", flush=True)
+                return "ready"
         remaining = int(deadline - time.time())
         print(f"  [router] 等待就绪中，剩余 {remaining}s ...", end="\r", flush=True)
         time.sleep(ROUTER_POLL_INTERVAL_SEC)
@@ -244,19 +234,26 @@ def wait_router_ready() -> str:
 
 
 def run_router(script: Path, log_file: Path, cwd: Path) -> bool:
-    with open(log_file, "w") as lf:
-        r = subprocess.run(["bash", str(script)], stdout=lf, stderr=subprocess.STDOUT, cwd=str(cwd))
-    if r.returncode != 0:
-        print(f"  [router] 脚本执行失败（returncode={r.returncode}），详见 {log_file.resolve()}", flush=True)
+    # router 脚本有两种写法：
+    # 1) 脚本内部自己用 `&` 把进程后台化（如 infer-router 的 router.sh），脚本本身几秒内退出
+    # 2) 脚本前台常驻运行不退出（如 sglang_router.sh 直接 `python -m sglang_router.launch_router`）
+    # 用 subprocess.run 阻塞等待会导致第2种情况永远卡在这里、走不到探活逻辑，
+    # 所以统一用 Popen 非阻塞启动，然后靠 wait_router_ready() 探活判断是否成功
+    print(f"  [router] 后台启动脚本，日志: {log_file.resolve()}", flush=True)
+    proc = start_background(str(script), log_file, cwd=cwd)
+    status = wait_router_ready()
+    if status != "ready":
+        if proc.poll() is not None:
+            print(f"  [router] 进程已退出（returncode={proc.returncode}），详见 {log_file.resolve()}", flush=True)
         return False
-    return wait_router_ready() == "ready"
+    return True
 
 
 def run_client(script: Path, log_file: Path, cwd: Path) -> tuple[str, str]:
     """返回 (status, output)；status: 'ok' | 'timeout' | 'crashed'"""
-    with open(log_file, "w") as lf:
+    with open(log_file, "w", buffering=1) as lf:
         proc = subprocess.Popen(
-            ["bash", str(script)],
+            ["stdbuf", "-oL", "-eL", "bash", str(script)],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -482,7 +479,12 @@ def run_one_experiment(exp: dict, use_swanlab: bool) -> dict:
     name = exp["name"]
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = RESULTS_DIR / f"{ts}_{name}"
-    run_dir.mkdir(parents=True, exist_ok=True)
+    run_server_dir = run_dir / "1_server"
+    run_router_dir = run_dir / "2_router"
+    run_client_dir = run_dir / "3_client"
+    run_server_dir.mkdir(parents=True, exist_ok=True)
+    run_router_dir.mkdir(parents=True, exist_ok=True)
+    run_client_dir.mkdir(parents=True, exist_ok=True)
 
     result = {"name": name, "time": ts, "status": "pending", "metrics": {}}
     server_proc = None
@@ -492,10 +494,10 @@ def run_one_experiment(exp: dict, use_swanlab: bool) -> dict:
     try:
         # 1. 起服务
         server_script = SERVER_DIR / exp["server"].split("/")[-1]
-        server_log = run_dir / "server.log"
+        server_log = run_server_dir / "server.log"
         result["server_script"] = server_script.read_text(errors="replace")
         result["server_params"] = extract_params(result["server_script"])
-        (run_dir / "server_script.sh").write_text(result["server_script"])
+        (run_server_dir / "server_script.sh").write_text(result["server_script"])
         print(f"[1/6] 起服务: {server_script.resolve()}", flush=True)
         server_proc = start_background(str(server_script), server_log, cwd=BENCH_DIR)
         ready = wait_server_ready(server_log, server_proc)
@@ -510,10 +512,10 @@ def run_one_experiment(exp: dict, use_swanlab: bool) -> dict:
         # 3. 注册 router（可选）
         if exp.get("router"):
             router_script = ROUTER_DIR / exp["router"].split("/")[-1]
-            router_log = run_dir / "router.log"
+            router_log = run_router_dir / "router.log"
             result["router_script"] = router_script.read_text(errors="replace")
             result["router_params"] = extract_params(result["router_script"])
-            (run_dir / "router_script.sh").write_text(result["router_script"])
+            (run_router_dir / "router_script.sh").write_text(result["router_script"])
             print(f"[3/6] 注册 router: {router_script.resolve()}", flush=True)
             if not run_router(router_script, router_log, cwd=BENCH_DIR):
                 result["status"] = "router_failed"
@@ -525,10 +527,10 @@ def run_one_experiment(exp: dict, use_swanlab: bool) -> dict:
 
         # 4. 起测试
         client_script = CLIENT_DIR / exp["client"].split("/")[-1]
-        client_log = run_dir / "client.log"
+        client_log = run_client_dir / "client.log"
         result["client_script"] = client_script.read_text(errors="replace")
         result["client_params"] = extract_params(result["client_script"])
-        (run_dir / "client_script.sh").write_text(result["client_script"])
+        (run_client_dir / "client_script.sh").write_text(result["client_script"])
         print(f"[4/6] 起测试: {client_script.resolve()}", flush=True)
         run_status, output = run_client(client_script, client_log, cwd=BENCH_DIR)
         result["run_status"] = run_status
@@ -600,6 +602,7 @@ def main():
     args = parser.parse_args()
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    all_experiments = load_experiments()
 
     try:
         if args.kill:
@@ -607,15 +610,15 @@ def main():
             kill_sglang()
 
         if args.name:
-            experiments = [e for e in EXPERIMENTS if e["name"] == args.name]
+            experiments = [e for e in all_experiments if e["name"] == args.name]
             if not experiments:
                 sys.exit(f"[error] 未找到名为 {args.name} 的实验")
         else:
-            selection = show_menu(EXPERIMENTS)
+            selection = show_menu(all_experiments)
             if not selection:
                 print("未选择任何实验，退出。")
                 return
-            experiments = [EXPERIMENTS[i] for i in selection]
+            experiments = [all_experiments[i] for i in selection]
 
         all_results = []
         for exp in experiments:
