@@ -2,20 +2,20 @@
   {
     "name": "demo_openai_chat",
     "server": "demo_openai_chat.sh",
-    "router": "demo_openai_chat.sh",
-    "client": "router.sh"
+    "router": "bench/2_router/sglang_router.sh",
+    "client": "bench/3_client/demo_openai_chat.sh"
   },
   {
-    "name": "run_ds_tp4ep4dp4_bs64",
-    "server": "run_ds_tp4ep4dp4_bs64.sh",
-    "router": "router.sh",
-    "client": "client_backup_bs64.sh"
+    "name": "Gzz2_run_ds_tp4ep4dp4_bs64",
+    "server": "bench/1_server/run_ds_tp4ep4dp4.sh",
+    "router": "bench/2_router/sglang_router.sh",
+    "client": "GBzz2_client_backup_bs64.sh"
   },
   {
-    "name": "run_ds_tp4ep4dp4_bs192",
-    "server": "run_ds_tp4ep4dp4_bs192.sh",
-    "router": "router.sh",
-    "client": "client_backup_bs192.sh"
+    "name": "Gzz2_run_ds_tp4ep4dp4_bs64_tokenize32_16",
+    "server": "bench/1_server/run_ds_tp4ep4dp4_tokenize32_16.sh",
+    "router": "bench/2_router/sglang_router.sh",
+    "client": "GBzz2_client_backup_bs64.sh"
   },
   {
     "name": "Bzz2_run_ds_tp4ep4dp4_bs64",

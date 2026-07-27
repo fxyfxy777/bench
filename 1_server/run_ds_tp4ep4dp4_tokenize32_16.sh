@@ -65,9 +65,11 @@ sglang serve \
   --speculative-verify-strategy target_match \
   --kv-cache-dtype bf16 \
   --enable-fp32-lm-head \
+  --enable-fp32-moe-gate \
   --enable-deepseek-v4-bf16-indexer \
   --context-length 262144 \
-  --max-running-request 192 \
+  --tokenizer-worker-num 32 \
+  --detokenizer-worker-num 16 \
   --allow-auto-truncate \
   --enable-cache-report \
   --enable-metrics

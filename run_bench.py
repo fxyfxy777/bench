@@ -8,16 +8,13 @@ SGLang 服务压测编排工具（简化版）
       router/<name>.sh   注册 router 脚本（可选）
       client/<name>.sh   压测脚本（用户提供）
       results/<name>_<timestamp>/
-      1_server/
-        server.log
-        server_script.sh    # 起服务脚本的快照（防止 server/ 下的脚本被后续实验覆盖后无法追溯）
-      2_router/
-        router.log
-        router_script.sh
-      3_client/
-        client.log
-        client_script.sh
-      metrics.json         # 含起服务/测试脚本内容+解析出的参数、sglang版本+commit、测试结果指标
+        1_server.log
+        1_server_script.sh    # 起服务脚本的快照（防止 server/ 下的脚本被后续实验覆盖后无法追溯）
+        2_router.log
+        2_router_script.sh
+        3_client.log
+        3_client_script.sh
+        metrics.json         # 含起服务/测试脚本内容+解析出的参数、sglang版本+commit、测试结果指标
 
 流程（对 experiments.json 里每一条）:
     1. 起服务       -> 等待就绪（health + 日志双重判据，日志出现错误标记直接判失败）
@@ -40,6 +37,8 @@ run_bench.py 会立刻拿到一个空的 stdout（因为主进程秒退），无
     python run_bench.py --name xxx       # 直接跑指定 name，跳过菜单
     python run_bench.py --no-swanlab     # 跳过 swanlab 上报
     python run_bench.py --kill           # 测试开始前先清理一次残留进程/端口
+    python run_bench.py --report-only <run_dir_name>   # 不重跑，只用已有 metrics.json 补报 swanlab
+    python run_bench.py --report-only all               # 补报 results/ 下所有实验
 """
 
 import argparse
@@ -114,6 +113,15 @@ KILL_PATTERNS = ["sglang", "infer-router"]
 KILL_PORTS = [30100, 41000, 41500, 41800]
 
 SWANLAB_PROJECT = "sglang-bench"
+SWANLAB_KEY_FILE = BENCH_DIR / ".swanlab_key"
+
+
+def load_swanlab_api_key() -> str | None:
+    """从 bench/.swanlab_key 读取 API key（每次跑不用再手动 swanlab login）"""
+    if not SWANLAB_KEY_FILE.exists():
+        return None
+    key = SWANLAB_KEY_FILE.read_text(encoding="utf-8").strip()
+    return key or None
 
 # ── 指标解析（复用既有 benchmark_serving 输出格式） ──────────────────────────
 def parse_metrics(text: str) -> dict:
@@ -461,9 +469,12 @@ def build_swanlab_metrics(result: dict) -> dict:
 def report_swanlab(name: str, result: dict, run_dir: Path):
     try:
         import swanlab
+        api_key = load_swanlab_api_key()
+        if api_key:
+            swanlab.login(api_key=api_key)
         run = swanlab.init(
             project=SWANLAB_PROJECT,
-            experiment_name=f"{name}_{run_dir.name}",
+            experiment_name=run_dir.name,
             logdir=str(run_dir),
             config=build_swanlab_config(result),
         )
@@ -471,7 +482,7 @@ def report_swanlab(name: str, result: dict, run_dir: Path):
         run.finish()
         print(f"  [swanlab] 已上报: project={SWANLAB_PROJECT} name={name}", flush=True)
     except Exception as e:
-        print(f"  [swanlab] 上报失败（不影响本次实验结果落盘，若是未登录/无API Key，请先执行 `swanlab login`）: {e}", flush=True)
+        print(f"  [swanlab] 上报失败（不影响本次实验结果落盘，若是未登录/无API Key，请先执行 `swanlab login` 或把 key 写入 {SWANLAB_KEY_FILE}）: {e}", flush=True)
 
 
 # ── 单个实验的完整生命周期 ────────────────────────────────────────────────────
@@ -479,12 +490,7 @@ def run_one_experiment(exp: dict, use_swanlab: bool) -> dict:
     name = exp["name"]
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = RESULTS_DIR / f"{ts}_{name}"
-    run_server_dir = run_dir / "1_server"
-    run_router_dir = run_dir / "2_router"
-    run_client_dir = run_dir / "3_client"
-    run_server_dir.mkdir(parents=True, exist_ok=True)
-    run_router_dir.mkdir(parents=True, exist_ok=True)
-    run_client_dir.mkdir(parents=True, exist_ok=True)
+    run_dir.mkdir(parents=True, exist_ok=True)
 
     result = {"name": name, "time": ts, "status": "pending", "metrics": {}}
     server_proc = None
@@ -494,10 +500,10 @@ def run_one_experiment(exp: dict, use_swanlab: bool) -> dict:
     try:
         # 1. 起服务
         server_script = SERVER_DIR / exp["server"].split("/")[-1]
-        server_log = run_server_dir / "server.log"
+        server_log = run_dir / "1_server.log"
         result["server_script"] = server_script.read_text(errors="replace")
         result["server_params"] = extract_params(result["server_script"])
-        (run_server_dir / "server_script.sh").write_text(result["server_script"])
+        (run_dir / "1_server_script.sh").write_text(result["server_script"])
         print(f"[1/6] 起服务: {server_script.resolve()}", flush=True)
         server_proc = start_background(str(server_script), server_log, cwd=BENCH_DIR)
         ready = wait_server_ready(server_log, server_proc)
@@ -512,10 +518,10 @@ def run_one_experiment(exp: dict, use_swanlab: bool) -> dict:
         # 3. 注册 router（可选）
         if exp.get("router"):
             router_script = ROUTER_DIR / exp["router"].split("/")[-1]
-            router_log = run_router_dir / "router.log"
+            router_log = run_dir / "2_router.log"
             result["router_script"] = router_script.read_text(errors="replace")
             result["router_params"] = extract_params(result["router_script"])
-            (run_router_dir / "router_script.sh").write_text(result["router_script"])
+            (run_dir / "2_router_script.sh").write_text(result["router_script"])
             print(f"[3/6] 注册 router: {router_script.resolve()}", flush=True)
             if not run_router(router_script, router_log, cwd=BENCH_DIR):
                 result["status"] = "router_failed"
@@ -527,10 +533,10 @@ def run_one_experiment(exp: dict, use_swanlab: bool) -> dict:
 
         # 4. 起测试
         client_script = CLIENT_DIR / exp["client"].split("/")[-1]
-        client_log = run_client_dir / "client.log"
+        client_log = run_dir / "3_client.log"
         result["client_script"] = client_script.read_text(errors="replace")
         result["client_params"] = extract_params(result["client_script"])
-        (run_client_dir / "client_script.sh").write_text(result["client_script"])
+        (run_dir / "3_client_script.sh").write_text(result["client_script"])
         print(f"[4/6] 起测试: {client_script.resolve()}", flush=True)
         run_status, output = run_client(client_script, client_log, cwd=BENCH_DIR)
         result["run_status"] = run_status
@@ -594,14 +600,46 @@ def show_menu(experiments: list) -> list:
     return indices
 
 
+def report_swanlab_from_run_dir(run_dir: Path) -> bool:
+    """补报：从已存在的 results/<run>/metrics.json 里读结果，重新上报 swanlab（不重跑实验）"""
+    metrics_file = run_dir / "metrics.json"
+    if not metrics_file.exists():
+        print(f"[error] {metrics_file} 不存在，跳过", flush=True)
+        return False
+    result = json.loads(metrics_file.read_text(encoding="utf-8"))
+    if not result.get("metrics"):
+        print(f"[warn] {run_dir.name} 没有 metrics 数据，跳过", flush=True)
+        return False
+    print(f"[补报] {run_dir.name}", flush=True)
+    report_swanlab(result.get("name", run_dir.name), result, run_dir)
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", help="只跑指定 name 的实验（跳过交互式选择）")
     parser.add_argument("--no-swanlab", action="store_true", help="跳过 swanlab 上报")
     parser.add_argument("--kill", action="store_true", help="测试开始前先执行一次 kill_sglang() 清理残留进程/端口")
+    parser.add_argument(
+        "--report-only",
+        metavar="RUN_DIR",
+        help="不重跑实验，只从已有的 results/<run> 目录读取 metrics.json 重新上报 swanlab"
+        "（可传目录名或绝对路径；传 all 补报 results/ 下所有实验）",
+    )
     args = parser.parse_args()
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    if args.report_only:
+        if args.report_only == "all":
+            run_dirs = sorted(d for d in RESULTS_DIR.iterdir() if d.is_dir())
+        else:
+            p = Path(args.report_only)
+            run_dirs = [p if p.is_absolute() else RESULTS_DIR / p.name]
+        for run_dir in run_dirs:
+            report_swanlab_from_run_dir(run_dir)
+        return
+
     all_experiments = load_experiments()
 
     try:
